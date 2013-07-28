@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -41,6 +41,9 @@
   <input type="hidden" name="op"  value="" />
 
   <h2>${_("stylesheet")}</h2>
+  <input type="hidden" name="prevstyle" value="${thing.site.prev_stylesheet}"/>
+  ${error_field("TOO_LONG", "prevstyle")}
+  ${error_field("BAD_REVISION", "prevstyle")}
   <div class="sheets">
     <div style="width: 100%" class="col">
       <div>
@@ -52,6 +55,11 @@
            >
           ${keep_space(thing.stylesheet_contents) or ''}
         </textarea>
+        <div id="conflict_box" style="display: none">
+            <div id="conflict_diff"></div>
+            <h2 class="error">${_('Your edit will not be saved!')}</h2>
+            <textarea rows="20" cols="20" name="conflict_old"></textarea>
+        </div>
       </div>
     </div>
     <div style="display:none" class="col">
@@ -211,6 +219,14 @@
                         .replace(/.*[\/\\]/, "").split('.')[0]
                         .replace(/[ _]/g, "-");
                     $('#img-name').val(f);
+                }
+
+                var ext = file_input.value
+                    .split('.').pop().toLowerCase()
+                    .replace("jpeg", "jpg");
+                if (ext == 'png' || ext == 'jpg') {
+                    $('input:radio[name=img_type]').attr('checked', false);
+                    $('input:radio[name=img_type][value="' + ext + '"]').attr('checked', true);
                 }
             }
         }

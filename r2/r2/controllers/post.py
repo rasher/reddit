@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -25,16 +25,13 @@ from reddit_base import cross_domain
 from api import ApiController
 from r2.lib.utils import Storage, query_string, UrlParser
 from r2.lib.emailer import opt_in, opt_out
+from r2.lib.validator import *
 from pylons import request, c, g
-from validator import *
 from pylons.i18n import _
 from r2.models import *
 import hashlib
 
 class PostController(ApiController):
-    def api_wrapper(self, kw):
-        return Storage(**kw)
-
     def set_options(self, all_langs, pref_lang, **kw):
         if c.errors.errors:
             print "fucker"
@@ -105,6 +102,7 @@ class PostController(ApiController):
               pref_show_sponsors = VBoolean("show_sponsors"),
               pref_show_sponsorships = VBoolean("show_sponsorships"),
               pref_highlight_new_comments = VBoolean("highlight_new_comments"),
+              pref_monitor_mentions=VBoolean("monitor_mentions"),
               all_langs = VOneOf('all-langs', ('all', 'some'), default='all'))
     def POST_options(self, all_langs, pref_lang, **kw):
         #temporary. eventually we'll change pref_clickgadget to an
@@ -121,10 +119,14 @@ class PostController(ApiController):
         if kw.get("pref_no_profanity") or c.user.pref_no_profanity:
             kw['pref_label_nsfw'] = True
 
+        # default all the gold options to on if they don't have gold
         if not c.user.gold:
-            kw['pref_show_adbox'] = True
-            kw['pref_show_sponsors'] = True
-            kw['pref_show_sponsorships'] = True
+            for pref in ('pref_show_adbox',
+                         'pref_show_sponsors',
+                         'pref_show_sponsorships',
+                         'pref_highlight_new_comments',
+                         'pref_monitor_mentions'):
+                kw[pref] = True
 
         self.set_options(all_langs, pref_lang, **kw)
         u = UrlParser(c.site.path + "prefs")
@@ -146,10 +148,7 @@ class PostController(ApiController):
                 c.user.pref_over_18 = True
                 c.user._commit()
             else:
-                ip_hash = hashlib.sha1(request.ip).hexdigest()
-                domain = g.domain if not c.frameless_cname else None
-                c.cookies.add('over18', ip_hash,
-                              domain = domain)
+                c.cookies.add("over18", "1")
             return self.redirect(dest)
         else:
             return self.redirect('/')
@@ -180,7 +179,7 @@ class PostController(ApiController):
     def POST_login(self, dest, *a, **kw):
         ApiController._handle_login(self, *a, **kw)
         c.render_style = "html"
-        c.response_content_type = ""
+        response.content_type = "text/html"
 
         if c.errors:
             return LoginPage(user_login = request.post.get('user'),
@@ -192,7 +191,7 @@ class PostController(ApiController):
     def POST_reg(self, dest, *a, **kw):
         ApiController._handle_register(self, *a, **kw)
         c.render_style = "html"
-        c.response_content_type = ""
+        response.content_type = "text/html"
 
         if c.errors:
             return LoginPage(user_reg = request.post.get('user'),

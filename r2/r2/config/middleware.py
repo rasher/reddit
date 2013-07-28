@@ -16,11 +16,12 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 """Pylons middleware initialization"""
+import importlib
 import re
 import urllib
 import tempfile
@@ -31,10 +32,10 @@ from paste.cascade import Cascade
 from paste.registry import RegistryManager
 from paste.urlparser import StaticURLParser
 from paste.deploy.converters import asbool
-from pylons import config, Response
-from pylons.error import error_template
-from pylons.middleware import ErrorDocuments, ErrorHandler, StaticJavascripts
-from pylons.wsgiapp import PylonsApp, PylonsBaseWSGIApp
+from pylons import config, response
+from pylons.middleware import ErrorDocuments, ErrorHandler
+from pylons.wsgiapp import PylonsApp
+from routes.middleware import RoutesMiddleware
 
 from r2.config.environment import load_environment
 from r2.config.rewrites import rewrites
@@ -42,28 +43,40 @@ from r2.config.extensions import extension_mapping, set_extension
 from r2.lib.utils import is_subdomain
 
 
-# hack in Paste support for HTTP 429 "Too Many Requests"
-from paste import httpexceptions, wsgiwrappers
+# patch in WebOb support for HTTP 429 "Too Many Requests"
+import webob.exc
+import webob.util
 
-class HTTPTooManyRequests(httpexceptions.HTTPClientError):
+class HTTPTooManyRequests(webob.exc.HTTPClientError):
     code = 429
     title = 'Too Many Requests'
     explanation = ('The server has received too many requests from the client.')
 
-httpexceptions._exceptions[429] = HTTPTooManyRequests
-wsgiwrappers.STATUS_CODE_TEXT[429] = HTTPTooManyRequests.title
+webob.exc.status_map[429] = HTTPTooManyRequests
+webob.util.status_reasons[429] = HTTPTooManyRequests.title
 
 #from pylons.middleware import error_mapper
 def error_mapper(code, message, environ, global_conf=None, **kw):
-    from pylons import c
     if environ.get('pylons.error_call'):
         return None
     else:
         environ['pylons.error_call'] = True
 
+    from pylons import c
+
+    # c is not always registered with the paste registry by the time we get to
+    # this error_mapper. if it's not, we can safely assume that we didn't use
+    # the pagecache. one such case where this happens is the
+    # DomainMiddleware-based srname.reddit.com -> reddit.com/r/srname redirect.
+    try:
+        if c.used_cache:
+            return
+    except TypeError:
+        pass
+
     if global_conf is None:
         global_conf = {}
-    codes = [304, 401, 403, 404, 429, 503]
+    codes = [304, 400, 401, 403, 404, 409, 415, 429, 503]
     if not asbool(global_conf.get('debug')):
         codes.append(500)
     if code in codes:
@@ -73,7 +86,10 @@ def error_mapper(code, message, environ, global_conf=None, **kw):
         exception = environ.get('r2.controller.exception')
         if exception:
             d['explanation'] = exception.explanation
-
+            error_data = getattr(exception, 'error_data', None)
+            if error_data:
+                environ['extra_error_data'] = error_data
+        
         if environ.get('REDDIT_CNAME'):
             d['cnameframe'] = 1
         if environ.get('REDDIT_NAME'):
@@ -83,14 +99,15 @@ def error_mapper(code, message, environ, global_conf=None, **kw):
 
         #preserve x-sup-id when 304ing
         if code == 304:
-            #check to see if c is useable
             try:
-                c.test
+                # make sure that we're in a context where we can use SOP
+                # objects (error page statics appear to not be in this context)
+                response.headers
             except TypeError:
                 pass
             else:
-                if c.response.headers.has_key('x-sup-id'):
-                    d['x-sup-id'] = c.response.headers['x-sup-id']
+                if response.headers.has_key('x-sup-id'):
+                    d['x-sup-id'] = response.headers['x-sup-id']
 
         extension = environ.get("extension")
         if extension:
@@ -176,17 +193,15 @@ class DomainMiddleware(object):
 
         # if there was a subreddit subdomain, redirect
         if sr_redirect and environ.get("FULLPATH"):
-            r = Response()
             if not subdomains and g.domain_prefix:
                 subdomains.append(g.domain_prefix)
             subdomains.append(g.domain)
             redir = "%s/r/%s/%s" % ('.'.join(subdomains),
                                     sr_redirect, environ['FULLPATH'])
             redir = "http://" + redir.replace('//', '/')
-            r.status_code = 301
-            r.headers['location'] = redir
-            r.content = ""
-            return r(environ, start_response)
+
+            start_response("301 Moved Permanently", [("Location", redir)])
+            return [""]
 
         return self.app(environ, start_response)
 
@@ -203,7 +218,7 @@ class SubredditMiddleware(object):
         if sr:
             environ['subreddit'] = sr.groups()[0]
             environ['PATH_INFO'] = self.sr_pattern.sub('', path) or '/'
-        elif path.startswith("/reddits"):
+        elif path.startswith(('/subreddits', '/reddits')):
             environ['subreddit'] = 'r'
         return self.app(environ, start_response)
 
@@ -286,7 +301,7 @@ class StaticTestMiddleware(object):
         if environ['HTTP_HOST'] == self.domain:
             environ['PATH_INFO'] = self.static_path.rstrip('/') + environ['PATH_INFO']
             return self.app(environ, start_response)
-        raise httpexceptions.HTTPNotFound()
+        raise webob.exc.HTTPNotFound()
 
 class LimitUploadSize(object):
     """
@@ -299,36 +314,31 @@ class LimitUploadSize(object):
 
     def __call__(self, environ, start_response):
         cl_key = 'CONTENT_LENGTH'
-        if environ['REQUEST_METHOD'] == 'POST':
+        is_error = environ.get("pylons.error_call", False)
+        if not is_error and environ['REQUEST_METHOD'] == 'POST':
             if cl_key not in environ:
-                r = Response()
-                r.status_code = 411
-                r.content = '<html><head></head><body>length required</body></html>'
-                return r(environ, start_response)
+                start_response("411 Length Required", [])
+                return ['<html><body>length required</body></html>']
 
             try:
                 cl_int = int(environ[cl_key])
             except ValueError:
-                r = Response()
-                r.status_code = 400
-                r.content = '<html><head></head><body>bad request</body></html>'
-                return r(environ, start_response)
+                start_response("400 Bad Request", [])
+                return ['<html><body>bad request</body></html>']
 
             if cl_int > self.max_size:
                 from r2.lib.strings import string_dict
                 error_msg = string_dict['css_validator_messages']['max_size'] % dict(max_size = self.max_size/1024)
-                r = Response()
-                r.status_code = 413
-                r.content = ("<html>"
-                             "<head>"
-                             "<script type='text/javascript'>"
-                             "parent.completedUploadImage('failed',"
-                             "''," 
-                             "''," 
-                             "[['BAD_CSS_NAME', ''], ['IMAGE_ERROR', '", error_msg,"']],"
-                             "'image-upload');"
-                             "</script></head><body>you shouldn\'t be here</body></html>")
-                return r(environ, start_response)
+                start_response("413 Too Big", [])
+                return ["<html>"
+                        "<head>"
+                        "<script type='text/javascript'>"
+                        "parent.completedUploadImage('failed',"
+                        "'',"
+                        "'',"
+                        "[['BAD_CSS_NAME', ''], ['IMAGE_ERROR', '", error_msg,"']],"
+                        "'image-upload');"
+                        "</script></head><body>you shouldn\'t be here</body></html>"]
 
         return self.app(environ, start_response)
 
@@ -358,29 +368,36 @@ class CleanupMiddleware(object):
             return start_response(status, fixed, exc_info)
         return self.app(environ, custom_start_response)
 
-#god this shit is disorganized and confusing
-class RedditApp(PylonsBaseWSGIApp):
+
+class RedditApp(PylonsApp):
     def __init__(self, *args, **kwargs):
         super(RedditApp, self).__init__(*args, **kwargs)
         self._loading_lock = Lock()
         self._controllers = None
 
-    def load_controllers(self):
-        with self._loading_lock:
-            if not self._controllers:
-                controllers = __import__(self.package_name + '.controllers').controllers
-                controllers.load_controllers()
-                config['r2.plugins'].load_controllers()
-                self._controllers = controllers
+    def setup_app_env(self, environ, start_response):
+        PylonsApp.setup_app_env(self, environ, start_response)
+        self.load_controllers()
 
-        return self._controllers
+    def load_controllers(self):
+        if self._controllers:
+            return
+
+        with self._loading_lock:
+            if self._controllers:
+                return
+
+            controllers = importlib.import_module(self.package_name +
+                                                  '.controllers')
+            controllers.load_controllers()
+            config['r2.plugins'].load_controllers()
+            self._controllers = controllers
 
     def find_controller(self, controller_name):
         if controller_name in self.controller_classes:
             return self.controller_classes[controller_name]
 
-        controllers = self.load_controllers()
-        controller_cls = controllers.get_controller(controller_name)
+        controller_cls = self._controllers.get_controller(controller_name)
         self.controller_classes[controller_name] = controller_cls
         return controller_cls
 
@@ -407,7 +424,8 @@ def make_app(global_conf, full_stack=True, **app_conf):
     g = config['pylons.g']
 
     # The Pylons WSGI app
-    app = PylonsApp(base_wsgi_app=RedditApp)
+    app = RedditApp()
+    app = RoutesMiddleware(app, config["routes.map"])
 
     # CUSTOM MIDDLEWARE HERE (filtered by the error handling middlewares)
 
@@ -427,8 +445,7 @@ def make_app(global_conf, full_stack=True, **app_conf):
 
     if asbool(full_stack):
         # Handle Python exceptions
-        app = ErrorHandler(app, global_conf, error_template=error_template,
-                           **config['pylons.errorware'])
+        app = ErrorHandler(app, global_conf, **config['pylons.errorware'])
 
         # Display error documents for 401, 403, 404 status codes (and 500 when
         # debug is disabled)
@@ -438,9 +455,8 @@ def make_app(global_conf, full_stack=True, **app_conf):
     app = RegistryManager(app)
 
     # Static files
-    javascripts_app = StaticJavascripts()
     static_app = StaticURLParser(config['pylons.paths']['static_files'])
-    static_cascade = [static_app, javascripts_app, app]
+    static_cascade = [static_app, app]
 
     if config['r2.plugins'] and g.config['uncompressedJS']:
         plugin_static_apps = Cascade([StaticURLParser(plugin.static_dir)

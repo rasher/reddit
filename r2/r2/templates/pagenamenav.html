@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -31,9 +31,9 @@
   </span>
 </%def>
 
-<%def name="reddits()">
+<%def name="subreddits()">
   <span class="hover pagename redditname">
-    ${plain_link(_("reddits"), "/reddits/", _sr_path=False)}
+    ${plain_link(_("subreddits"), "/subreddits/", _sr_path=False)}
   </span>
 </%def>
 
@@ -43,7 +43,7 @@
 
 <%def name="help()">
   <span class="hover pagename redditname">
-    ${plain_link(thing.title, "/help", _sr_path=False)}
+    ${plain_link(thing.title, "/wiki", _sr_path=False)}
   </span>
 </%def>
 

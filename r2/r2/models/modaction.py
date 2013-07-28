@@ -16,13 +16,17 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
+
+from datetime import timedelta
+import itertools
 
 from r2.lib.db import tdb_cassandra
 from r2.lib.utils import tup
 from r2.models import Account, Subreddit, Link, Comment, Printable
+from r2.models.subreddit import DefaultSR
 from pycassa.system_manager import TIME_UUID_TYPE
 from uuid import UUID
 from pylons.i18n import _
@@ -48,8 +52,12 @@ class ModAction(tdb_cassandra.UuidThing, Printable):
 
     actions = ('banuser', 'unbanuser', 'removelink', 'approvelink', 
                'removecomment', 'approvecomment', 'addmoderator',
+               'invitemoderator', 'uninvitemoderator', 'acceptmoderatorinvite',
                'removemoderator', 'addcontributor', 'removecontributor',
-               'editsettings', 'editflair', 'distinguish', 'marknsfw')
+               'editsettings', 'editflair', 'distinguish', 'marknsfw', 
+               'wikibanned', 'wikicontributor', 'wikiunbanned',
+               'removewikicontributor', 'wikirevise', 'wikipermlevel',
+               'ignorereports', 'unignorereports', 'setpermissions')
 
     _menu = {'banuser': _('ban user'),
              'unbanuser': _('unban user'),
@@ -59,31 +67,55 @@ class ModAction(tdb_cassandra.UuidThing, Printable):
              'approvecomment': _('approve comment'),
              'addmoderator': _('add moderator'),
              'removemoderator': _('remove moderator'),
+             'invitemoderator': _('invite moderator'),
+             'uninvitemoderator': _('uninvite moderator'),
+             'acceptmoderatorinvite': _('accept moderator invite'),
              'addcontributor': _('add contributor'),
              'removecontributor': _('remove contributor'),
              'editsettings': _('edit settings'),
              'editflair': _('edit flair'),
              'distinguish': _('distinguish'),
-             'marknsfw': _('mark nsfw')}
+             'marknsfw': _('mark nsfw'),
+             'wikibanned': _('ban from wiki'),
+             'wikiunbanned': _('unban from wiki'),
+             'wikicontributor': _('add wiki contributor'),
+             'removewikicontributor': _('remove wiki contributor'),
+             'wikirevise': _('wiki revise page'),
+             'wikipermlevel': _('wiki page permissions'),
+             'ignorereports': _('ignore reports'),
+             'unignorereports': _('unignore reports'),
+             'setpermissions': _('permissions')}
 
     _text = {'banuser': _('banned'),
+             'wikibanned': _('wiki banned'),
+             'wikiunbanned': _('unbanned from wiki'),
+             'wikicontributor': _('added wiki contributor'),
+             'removewikicontributor': _('removed wiki contributor'),
              'unbanuser': _('unbanned'),
              'removelink': _('removed'),
              'approvelink': _('approved'),
              'removecomment': _('removed'),
-             'approvecomment': _('approved'),                    
+             'approvecomment': _('approved'),
              'addmoderator': _('added moderator'),
              'removemoderator': _('removed moderator'),
+             'invitemoderator': _('invited moderator'),
+             'uninvitemoderator': _('uninvited moderator'),
+             'acceptmoderatorinvite': _('accepted moderator invitation'),
              'addcontributor': _('added approved contributor'),
              'removecontributor': _('removed approved contributor'),
              'editsettings': _('edited settings'),
              'editflair': _('edited flair'),
+             'wikirevise': _('edited wiki page'),
+             'wikipermlevel': _('changed wiki page permission level'),
              'distinguish': _('distinguished'),
-             'marknsfw': _('marked nsfw')}
+             'marknsfw': _('marked nsfw'),
+             'ignorereports': _('ignored reports'),
+             'unignorereports': _('unignored reports'),
+             'setpermissions': _('changed permissions on')}
 
     _details_text = {# approve comment/link
                      'unspam': _('unspam'),
-                     'confirm_ham': _('confirmed ham'),
+                     'confirm_ham': _('approved'),
                      # remove comment/link
                      'confirm_spam': _('confirmed spam'),
                      'remove': _('removed not spam'),
@@ -97,9 +129,14 @@ class ModAction(tdb_cassandra.UuidThing, Printable):
                      'lang': _('language'),
                      'type': _('type'),
                      'link_type': _('link type'),
+                     'submit_link_label': _('submit link button label'),
+                     'submit_text_label': _('submit text post button label'),
+                     'comment_score_hide_mins': _('comment score hide period'),
                      'over_18': _('toggle viewers must be over 18'),
                      'allow_top': _('toggle allow in default set'),
                      'show_media': _('toggle show thumbnail images of content'),
+                     'public_traffic': _('toggle public traffic stats page'),
+                     'exclude_banned_modqueue': _('toggle exclude banned users\' posts from modqueue'),
                      'domain': _('domain'),
                      'show_cname_sidebar': _('toggle show sidebar from cname'),
                      'css_on_cname': _('toggle custom CSS from cname'),
@@ -122,7 +159,11 @@ class ModAction(tdb_cassandra.UuidThing, Printable):
                      'flair_delete_template': _('delete flair template'),
                      'flair_clear_template': _('clear flair templates'),
                      # distinguish/nsfw
-                     'remove': _('remove')}
+                     'remove': _('remove'),
+                     'ignore_reports': _('ignore reports'),
+                     # permissions
+                     'permission_moderator': _('set permissions on moderator'),
+                     'permission_moderator_invite': _('set permissions on moderator invitation')}
 
     # This stuff won't change
     cache_ignore = set(['subreddit', 'target']).union(Printable.cache_ignore)
@@ -161,7 +202,10 @@ class ModAction(tdb_cassandra.UuidThing, Printable):
         # Split this off into separate function to check for valid actions?
         if not action in cls.actions:
             raise ValueError("Invalid ModAction: %s" % action)
-
+        
+        # Front page should insert modactions into the base sr
+        sr = sr._base if isinstance(sr, DefaultSR) else sr
+        
         kw = dict(sr_id36=sr._id36, mod_id36=mod._id36, action=action)
 
         if target:
@@ -205,7 +249,10 @@ class ModAction(tdb_cassandra.UuidThing, Printable):
             rowkeys = [sr._id36 for sr in srs]
             q = ModActionBySR.query(rowkeys, after=after, reverse=reverse, count=count)
         elif mod and not action:
-            rowkeys = ['%s_%s' % (sr._id36, mod._id36) for sr in srs]
+            mods = tup(mod)
+            rowkeys = itertools.product([sr._id36 for sr in srs],
+                [mod._id36 for mod in mods])
+            rowkeys = ['%s_%s' % (sr, mod) for sr, mod in rowkeys]
             q = ModActionBySRMod.query(rowkeys, after=after, reverse=reverse, count=count)
         elif not mod and action:
             rowkeys = ['%s_%s' % (sr._id36, action) for sr in srs]
@@ -318,7 +365,7 @@ class ModActionBySR(tdb_cassandra.View):
     _connection_pool = 'main'
     _compare_with = TIME_UUID_TYPE
     _view_of = ModAction
-    _ttl = 60*60*24*30*3  # 3 month ttl
+    _ttl = timedelta(days=90)
     _read_consistency_level = tdb_cassandra.CL.ONE
 
     @classmethod
@@ -330,7 +377,7 @@ class ModActionBySRMod(tdb_cassandra.View):
     _connection_pool = 'main'
     _compare_with = TIME_UUID_TYPE
     _view_of = ModAction
-    _ttl = 60*60*24*30*3  # 3 month ttl
+    _ttl = timedelta(days=90)
     _read_consistency_level = tdb_cassandra.CL.ONE
 
     @classmethod
@@ -342,7 +389,7 @@ class ModActionBySRAction(tdb_cassandra.View):
     _connection_pool = 'main'
     _compare_with = TIME_UUID_TYPE
     _view_of = ModAction
-    _ttl = 60*60*24*30*3  # 3 month ttl
+    _ttl = timedelta(days=90)
     _read_consistency_level = tdb_cassandra.CL.ONE
 
     @classmethod

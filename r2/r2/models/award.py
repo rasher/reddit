@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -117,6 +117,18 @@ class Award (Thing):
         else:
             g.log.debug("%s didn't have %s" % (user, codename))
 
+class FakeTrophy(object):
+    def __init__(self, recipient, award, description=None, url=None,
+                 cup_info=None):
+        self._thing2 = award
+        self._thing1 = recipient
+        self.description = description
+        self.url = url
+        self.trophy_url = getattr(self, "url",
+                                  getattr(self._thing2, "url", None))
+        self.cup_info = cup_info
+        self._id = self._id36 = None
+
 class Trophy(Relation(Account, Award)):
     @classmethod
     def _new(cls, recipient, award, description = None,
@@ -169,7 +181,7 @@ class Trophy(Relation(Account, Award)):
     def by_award_cache(cls, award_id):
         q = Trophy._query(Trophy.c._thing2_id == award_id,
                           sort = desc('_date'))
-        q._limit = 500
+        q._limit = 50
         return [ t._id for t in q ]
 
     @classmethod
@@ -178,3 +190,22 @@ class Trophy(Relation(Account, Award)):
         trophies = Trophy._byID_rel(rel_ids, data=True, eager_load=True,
                                     thing_data=True, return_dict = False)
         return trophies
+
+    @classmethod
+    def claim(cls, user, uid, award, description, url):
+        with g.make_lock("claim_award", str("%s_%s" % (user.name, uid))):
+            existing_trophy_id = user.get_trophy_id(uid)
+            if existing_trophy_id:
+                trophy = cls._byID(existing_trophy_id)
+                preexisting = True
+            else:
+                preexisting = False
+                trophy = cls._new(user, award, description=description,
+                                  url=url)
+                user.set_trophy_id(uid, trophy._id)
+                user._commit()
+        return trophy, preexisting
+
+    @property
+    def trophy_url(self):
+        return getattr(self, "url", getattr(self._thing2, "url", None))

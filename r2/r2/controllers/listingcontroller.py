@@ -16,20 +16,19 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 from oauth2 import OAuth2ResourceController, require_oauth2_scope
-from reddit_base import RedditController, base_listing, organic_pos
-from validator import *
+from reddit_base import RedditController, base_listing
 
 from r2.models import *
 from r2.models.query_cache import CachedQuery, MergedCachedQuery
 from r2.config.extensions import is_api
 from r2.lib.pages import *
 from r2.lib.pages.things import wrap_links
-from r2.lib.menus import NewMenu, TimeMenu, SortMenu, RecSortMenu, ProfileSortMenu
+from r2.lib.menus import TimeMenu, SortMenu, RecSortMenu, ProfileSortMenu
 from r2.lib.menus import ControversyTimeMenu
 from r2.lib.rising import get_rising
 from r2.lib.wrapped import Wrapped
@@ -39,22 +38,22 @@ from r2.lib.db import queries
 from r2.lib.strings import Score
 from r2.lib import organic
 import r2.lib.search as search
+from r2.lib.template_helpers import add_sr
 from r2.lib.utils import iters, check_cheating, timeago
 from r2.lib import sup
-from r2.lib.promote import randomized_promotion_list, get_promote_srid
+from r2.lib.validator import *
+from r2.lib.butler import extract_user_mentions
 import socket
 
 from api_docs import api_doc, api_section
-from admin import admin_profile_query
 
 from pylons.i18n import _
-from pylons import Response
 from pylons.controllers.util import redirect_to
 
 import random
 from functools import partial
 
-class ListingController(RedditController):
+class ListingController(RedditController, OAuth2ResourceController):
     """Generalized controller for pages with lists of links."""
 
     # toggle skipping of links based on the users' save/hide/vote preferences
@@ -63,7 +62,7 @@ class ListingController(RedditController):
     # allow stylesheets on listings
     allow_stylesheets = True
 
-    # toggles showing numbers 
+    # toggles showing numbers
     show_nums = True
 
     # any text that should be shown on the top of the page
@@ -78,6 +77,7 @@ class ListingController(RedditController):
 
     # login box, subreddit box, submit box, etc, visible
     show_sidebar = True
+    show_chooser = False
 
     # class (probably a subclass of Reddit) to use to render the page.
     render_cls = Reddit
@@ -85,6 +85,10 @@ class ListingController(RedditController):
     #extra parameters to send to the render_cls constructor
     render_params = {}
     extra_page_classes = ['listing-page']
+
+    def pre(self):
+        self.check_for_bearer_token()
+        RedditController.pre(self)
 
     @property
     def menus(self):
@@ -104,22 +108,21 @@ class ListingController(RedditController):
         self.query_obj = self.query()
         self.builder_obj = self.builder()
         self.listing_obj = self.listing()
+
         content = self.content()
-
-        res = self.render_cls(content = content,
-                              page_classes = self.extra_page_classes,
-                              show_sidebar = self.show_sidebar,
-                              nav_menus = self.menus,
-                              title = self.title(),
-                              robots = getattr(self, "robots", None),
-                              **self.render_params).render()
-        return res
-
+        return self.render_cls(content=content,
+                               page_classes=self.extra_page_classes,
+                               show_sidebar=self.show_sidebar,
+                               show_chooser=self.show_chooser,
+                               nav_menus=self.menus,
+                               title=self.title(),
+                               robots=getattr(self, "robots", None),
+                               **self.render_params).render()
 
     def content(self):
         """Renderable object which will end up as content of the render_cls"""
         return self.listing_obj
-        
+
     def query(self):
         """Query to execute to generate the listing"""
         raise NotImplementedError
@@ -162,7 +165,7 @@ class ListingController(RedditController):
 
     def listing(self):
         """Listing to generate from the builder"""
-        if (getattr(c.site, "_id", -1) == get_promote_srid() and 
+        if (getattr(c.site, "_id", -1) == get_promote_srid() and
             not c.user_is_sponsor):
             abort(403, 'forbidden')
         pane = LinkListing(self.builder_obj, show_nums = self.show_nums).listing()
@@ -182,6 +185,7 @@ class ListingController(RedditController):
 
     builder_wrapper = staticmethod(default_thing_wrapper())
 
+    @require_oauth2_scope("read")
     @base_listing
     @api_doc(api_section.listings, extensions=['json', 'xml'])
     def GET_listing(self, **env):
@@ -206,7 +210,7 @@ class FixListing(object):
         if self.after and self.after._hot == 0:
             self.abort404()
 
-        #don't draw next/prev links for 
+        #don't draw next/prev links for
         if listing.things:
             if listing.things[-1]._hot == 0:
                 listing.next = None
@@ -218,137 +222,125 @@ class FixListing(object):
 
 class HotController(FixListing, ListingController):
     where = 'hot'
+    extra_page_classes = ListingController.extra_page_classes + ['hot-page']
+    show_chooser = True
 
-    def spotlight(self):
-        campaigns_by_link = {}
-        if (self.requested_ad or
-            not isinstance(c.site, DefaultSR) and c.user.pref_show_sponsors):
+    def make_requested_ad(self):
+        try:
+            link = Link._by_fullname(self.requested_ad, data=True)
+        except NotFound:
+            self.abort404()
 
-            link_ids = None
+        if not (link.promoted and
+                (c.user_is_sponsor or
+                 c.user_is_loggedin and link.author_id == c.user._id)):
+            self.abort403()
 
-            if self.requested_ad:
-                link = None
-                try:
-                    link = Link._by_fullname(self.requested_ad)
-                except NotFound:
-                    pass
+        if not promote.is_live_on_sr(link, c.site.name):
+            self.abort403()
 
-                if not (link and link.promoted and
-                        (c.user_is_sponsor or
-                         c.user_is_loggedin and link.author_id == c.user._id)):
-                    return self.abort404()
+        res = wrap_links([link._fullname], wrapper=self.builder_wrapper,
+                         skip=False)
+        res.parent_name = "promoted"
+        if res.things:
+            return res
 
-                # check if we can show the requested ad
-                if promote.is_live_on_sr(link, c.site.name):
-                    link_ids = [link._fullname]
-                else:
-                    return _("requested campaign not eligible for display")
-            else:
-                # no organic box on a hot page, then show a random promoted link
-                promo_tuples = randomized_promotion_list(c.user, c.site)
-                link_ids, camp_ids = zip(*promo_tuples) if promo_tuples else ([],[])
+    def make_single_ad(self):
+        promo_tuples = promote.lottery_promoted_links(c.user, c.site, n=10)
+        b = CampaignBuilder(promo_tuples, wrap=self.builder_wrapper,
+                            keep_fn=organic.keep_fresh_links, num=1, skip=True)
+        res = LinkListing(b, nextprev=False).listing()
+        res.parent_name = "promoted"
+        if res.things:
+            return res
 
-                # save campaign-to-link mapping so campaign can be added to 
-                # link data later (for tracking.) Gotcha: assumes each link 
-                # appears for only campaign
-                campaigns_by_link = dict(promo_tuples)
+    def make_spotlight(self):
+        """Build the Spotlight.
 
-            if link_ids:
-                res = wrap_links(link_ids, wrapper=self.builder_wrapper,
-                                 num=1, keep_fn=lambda x: x.fresh, skip=True)
-                res.parent_name = "promoted"
-                if res.things:
-                    # store campaign id for tracking
-                    for thing in res.things:
-                        thing.campaign = campaigns_by_link.get(thing._fullname, None)
-                    return res
+        The frontpage gets a Spotlight box that contains promoted and organic
+        links from the user's subscribed subreddits and promoted links targeted
+        to the frontpage. If the user has disabled ads promoted links will not
+        be shown.
 
-        elif (isinstance(c.site, DefaultSR)
-            and (not c.user_is_loggedin
-                 or (c.user_is_loggedin and c.user.pref_organic))):
+        The content of the Spotlight box is a bit tricky because a single
+        version of the frontpage is cached and displayed to all logged out
+        users. Because of the caching we must include many promoted links and
+        select one to display on the client side. Otherwise, each logged out
+        user would see the same promoted link and we would not get the desired
+        distribution of promoted link views. Most of the promoted links are
+        included as stubs to reduce the size of the page. When a promoted link
+        stub is selected by the lottery the full link is fetched and displayed.
 
-            spotlight_links = organic.organic_links(c.user)
-            
-            pos = organic_pos()
+        There are only ~1000 cache resets per day so it is necessary to use
+        a large subset of the eligible promoted links when choosing stubs for
+        the Spotlight box. Using 100 stubs works great when there are fewer than
+        100 possible promoted links and allows room for growth.
 
-            if not spotlight_links:
-                pos = 0
-            elif pos != 0:
-                pos = pos % len(spotlight_links)
-            spotlight_keep_fn = organic.keep_fresh_links
-            num_links = organic.organic_length
+        """
 
-            # If prefs allow it, mix in promoted links and sr discovery content
-            if c.user.pref_show_sponsors or not c.user.gold:
-                if g.live_config['sr_discovery_links']:
-                    spotlight_links.extend(g.live_config['sr_discovery_links'])
-                    random.shuffle(spotlight_links)
-                    spotlight_keep_fn = lambda l: promote.is_promo(l) or organic.keep_fresh_links(l)
-                    num_links = len(spotlight_links)
-                spotlight_links, pos, campaigns_by_link = promote.insert_promoted(spotlight_links,
-                                                                                  pos) 
+        organic_fullnames = organic.organic_links(c.user)
+        promoted_links = []
 
-            # Need to do this again, because if there was a duplicate removed,
-            # pos might be pointing outside the list.
-            if not spotlight_links:
-                pos = 0
-            elif pos != 0:
-                pos = pos % len(spotlight_links)
+        # If prefs allow it, mix in promoted links and sr discovery content
+        if c.user.pref_show_sponsors or not c.user.gold:
+            if g.live_config['sr_discovery_links']:
+                organic_fullnames.extend(g.live_config['sr_discovery_links'])
 
-            if not spotlight_links:
-                return None
+            n_promoted = 100
+            n_build = 1 if c.user_is_loggedin else 10
+            picker = (promote.lottery_promoted_links if c.user_is_loggedin else
+                      promote.sample_promoted_links)
+            promo_tuples = picker(c.user, c.site, n=n_promoted)
 
-            # get links in proximity to pos
-            num_tl = len(spotlight_links)
-            if num_tl <= 3:
-                disp_links = spotlight_links
-            else:
-                left_side = max(-1, min(num_tl - 3, 8))
-                disp_links = [spotlight_links[(i + pos) % num_tl]
-                              for i in xrange(-2, left_side)]
+            if not c.user_is_loggedin:
+                promo_tuples.sort(key=lambda t: t.weight, reverse=True)
 
-            b = IDBuilder(disp_links,
-                          wrap = self.builder_wrapper,
-                          num = num_links,
-                          keep_fn = spotlight_keep_fn,
-                          skip = True)
+            b = CampaignBuilder(
+                    promo_tuples,
+                    wrap=self.builder_wrapper,
+                    keep_fn=organic.keep_fresh_links,
+                    skip=True,
+            )
+            promoted_links, first, last, before, after = b.get_items()
+            if promoted_links:
+                stubs = promoted_links[n_build:]
+                stubs = [promote.PromoTuple(item._fullname, item.weight,
+                                            item.campaign)
+                         for item in stubs]
+                promoted_links = promoted_links[:n_build] + stubs
 
-            try:
-                vislink = spotlight_links[pos]
-            except IndexError:
-                g.log.error("spotlight_links = %r" % spotlight_links)
-                g.log.error("pos = %d" % pos)
-                raise
+        if not (organic_fullnames or promoted_links):
+            return None
 
-            s = SpotlightListing(b, spotlight_items = spotlight_links,
-                                 visible_item = vislink,
-                                 max_num = self.listing_obj.max_num,
-                                 max_score = self.listing_obj.max_score).listing()
+        random.shuffle(organic_fullnames)
+        organic_fullnames = organic_fullnames[:10]
+        b = IDBuilder(organic_fullnames,
+                      wrap=self.builder_wrapper,
+                      keep_fn=organic.keep_fresh_links,
+                      skip=True)
+        organic_links = b.get_items()[0]
 
-            has_subscribed = c.user.has_subscribed
-            promo_visible = promote.is_promo(s.lookup[vislink])
-            if not promo_visible:
-                prob = g.live_config['spotlight_interest_sub_p'
-                                     if has_subscribed else
-                                     'spotlight_interest_nosub_p']
-                if random.random() < prob:
-                    bar = InterestBar(has_subscribed)
-                    s.spotlight_items.insert(pos, bar)
-                    s.visible_item = bar
+        has_subscribed = c.user.has_subscribed
+        interestbar_prob = g.live_config['spotlight_interest_sub_p'
+                                         if has_subscribed else
+                                         'spotlight_interest_nosub_p']
+        interestbar = InterestBar(has_subscribed)
+        promotion_prob = 0.5 if c.user_is_loggedin else 1.
 
-            if len(s.things) > 0:
-                # only pass through a listing if the links made it
-                # through our builder
-                organic.update_pos(pos+1)
-                # add campaign id to promoted links for tracking
-                for thing in s.things:
-                    thing.campaign = campaigns_by_link.get(thing._fullname, None)
-                return s
+        s = SpotlightListing(organic_links=organic_links,
+                             promoted_links=promoted_links,
+                             interestbar=interestbar,
+                             interestbar_prob=interestbar_prob,
+                             promotion_prob=promotion_prob,
+                             max_num = self.listing_obj.max_num,
+                             max_score = self.listing_obj.max_score,
+                             predetermined_winner=c.user_is_loggedin).listing()
+        return s
 
     def query(self):
         #no need to worry when working from the cache
-        if g.use_query_cache or isinstance(c.site, DefaultSR):
-            self.fix_listing = False
+        # TODO: just remove this then since we're always using the query cache
+        self.fix_listing = False
 
         if isinstance(c.site, DefaultSR):
             if c.user_is_loggedin:
@@ -365,27 +357,33 @@ class HotController(FixListing, ListingController):
 
         elif isinstance(c.site, MultiReddit):
             return normalized_hot(c.site.kept_sr_ids, obey_age_limit=False)
-
-        #if not using the query_cache we still want cached front pages
-        elif (not g.use_query_cache
-              and not isinstance(c.site, FakeSubreddit)
-              and self.after is None
-              and self.count == 0):
-            return get_hot([c.site])
         else:
             return c.site.get_links('hot', 'all')
 
     def content(self):
         # only send a spotlight listing for HTML rendering
         if c.render_style == "html":
-            spotlight = self.spotlight()
+            spotlight = None
+            show_sponsors = not (not c.user.pref_show_sponsors and c.user.gold)
+            show_organic = c.user.pref_organic
+            on_frontpage = isinstance(c.site, DefaultSR)
+
+            if self.requested_ad:
+                spotlight = self.make_requested_ad()
+            elif on_frontpage and show_organic:
+                spotlight = self.make_spotlight()
+            elif show_sponsors:
+                spotlight = self.make_single_ad()
+
             if spotlight:
-                return PaneStack([spotlight, self.listing_obj], css_class='spacer')
+                return PaneStack([spotlight, self.listing_obj],
+                                 css_class='spacer')
         return self.listing_obj
 
     def title(self):
         return c.site.title
 
+    @require_oauth2_scope("read")
     @listing_api_doc(uri='/hot')
     def GET_listing(self, **env):
         self.requested_ad = request.get.get('ad')
@@ -395,10 +393,8 @@ class HotController(FixListing, ListingController):
 class NewController(ListingController):
     where = 'new'
     title_text = _('newest submissions')
-
-    @property
-    def menus(self):
-        return [NewMenu(default = self.sort)]
+    extra_page_classes = ListingController.extra_page_classes + ['new-page']
+    show_chooser = True
 
     def keep_fn(self):
         def keep(item):
@@ -423,25 +419,31 @@ class NewController(ListingController):
         return keep
 
     def query(self):
-        if self.sort == 'rising':
-            return get_rising(c.site)
-        else:
-            return c.site.get_links('new', 'all')
+        return c.site.get_links('new', 'all')
 
-    @validate(sort = VMenu('controller', NewMenu))
-    def POST_listing(self, sort, **env):
-        # VMenu validator will save the value of sort before we reach this
-        # point. Now just redirect to GET mode.
-        return self.redirect(request.fullpath + query_string(dict(sort=sort)))
+    def POST_listing(self, **env):
+        # Redirect to GET mode in case of any legacy requests
+        return self.redirect(request.fullpath)
 
-    @validate(sort = VMenu('controller', NewMenu))
+    @require_oauth2_scope("read")
     @listing_api_doc(uri='/new')
-    def GET_listing(self, sort, **env):
-        self.sort = sort
+    def GET_listing(self, **env):
+        if request.params.get('sort') == 'rising':
+            return self.redirect(add_sr('/rising'))
+
         return ListingController.GET_listing(self, **env)
+
+class RisingController(NewController):
+    where = 'rising'
+    title_text = _('rising submissions')
+    extra_page_classes = ListingController.extra_page_classes + ['rising-page']
+
+    def query(self):
+        return get_rising(c.site)
 
 class BrowseController(ListingController):
     where = 'browse'
+    show_chooser = True
 
     def keep_fn(self):
         """For merged time-listings, don't show items that are too old
@@ -468,14 +470,17 @@ class BrowseController(ListingController):
         return self.redirect(
             request.fullpath + query_string(dict(sort=sort, t=t)))
 
+    @require_oauth2_scope("read")
     @validate(t = VMenu('sort', ControversyTimeMenu))
     @listing_api_doc(uri='/{sort}', uri_variants=['/top', '/controversial'])
     def GET_listing(self, sort, t, **env):
         self.sort = sort
         if sort == 'top':
             self.title_text = _('top scoring links')
+            self.extra_page_classes += ['top-page']
         elif sort == 'controversial':
             self.title_text = _('most controversial links')
+            self.extra_page_classes += ['controversial-page']
         else:
             # 'sort' is forced to top/controversial by routing.py,
             # but in case something has gone wrong...
@@ -511,7 +516,9 @@ class ByIDController(ListingController):
     def query(self):
         return self.names
 
-    @validate(links = VByName("names", thing_cls = Link, multiple = True))
+    @require_oauth2_scope("read")
+    @validate(links=VByName("names", thing_cls=Link,
+                            ignore_missing=True, multiple=True))
     def GET_listing(self, links, **env):
         if not links:
             return self.abort404()
@@ -547,6 +554,23 @@ class UserController(ListingController):
             res.append(ProfileSortMenu(default = self.sort))
             if self.sort not in ("hot", "new"):
                 res.append(TimeMenu(default = self.time))
+        if self.where == 'saved' and c.user.gold:
+            srnames = LinkSavesBySubreddit.get_saved_subreddits(self.vuser)
+            srnames += CommentSavesBySubreddit.get_saved_subreddits(self.vuser)
+            srs = Subreddit._by_name(srnames)
+            srnames = [name for name, sr in srs.iteritems()
+                            if sr.can_view(c.user)]
+            srnames = sorted(list(set(srnames)))
+            if len(srnames) > 1:
+                sr_buttons = [NavButton(_('all'), None, opt='sr',
+                                        css_class='primary')]
+                for srname in srnames:
+                    sr_buttons.append(NavButton(srname, srname, opt='sr'))
+                base_path = request.path
+                sr_menu = NavMenu(sr_buttons, base_path=base_path,
+                                  title=_('filter by subreddit'),
+                                  type='lightdrop')
+                res.append(sr_menu)
         return res
 
     def title(self):
@@ -616,13 +640,18 @@ class UserController(ListingController):
             q = queries.get_hidden(self.vuser)
 
         elif self.where == 'saved':
-            q = queries.get_saved(self.vuser)
+            srname = request.get.get('sr')
+            if srname and c.user.gold:
+                try:
+                    sr_id = Subreddit._by_name(srname)._id
+                except NotFound:
+                    sr_id = None
+            else:
+                sr_id = None
+            q = queries.get_saved(self.vuser, sr_id)
 
         elif c.user_is_sponsor and self.where == 'promoted':
-            q = promote.get_all_links(self.vuser._id)
-
-        elif c.user_is_admin:
-            q = admin_profile_query(self.vuser, self.where, desc('_date'))
+            q = queries.get_promoted_links(self.vuser._id)
 
         if q is None:
             return self.abort404()
@@ -632,9 +661,9 @@ class UserController(ListingController):
     @validate(vuser = VExistingUname('username'),
               sort = VMenu('sort', ProfileSortMenu, remember = False),
               time = VMenu('t', TimeMenu, remember = False))
-    @listing_api_doc(section=api_section.users, uri='/{username}/{where}',
-                     uri_variants=['/{username}/' + where for where in [
-                                       'overview', 'submitted', 'commented',
+    @listing_api_doc(section=api_section.users, uri='/user/{username}/{where}',
+                     uri_variants=['/user/{username}/' + where for where in [
+                                       'overview', 'submitted', 'comments',
                                        'liked', 'disliked', 'hidden', 'saved']])
     def GET_listing(self, where, vuser, sort, time, **env):
         self.where = where
@@ -658,10 +687,13 @@ class UserController(ListingController):
         if where in ('liked', 'disliked') and not votes_visible(vuser):
             return self.abort403()
 
-        if (where in ('saved', 'hidden') and not 
+        if (where in ('saved', 'hidden') and not
             ((c.user_is_loggedin and c.user._id == vuser._id) or
               c.user_is_admin)):
             return self.abort403()
+
+        if where == 'saved':
+            self.show_chooser = True
 
         check_cheating('user')
 
@@ -675,7 +707,8 @@ class UserController(ListingController):
         return ListingController.GET_listing(self, **env)
 
     @validate(vuser = VExistingUname('username'))
-    @api_doc(section=api_section.users, uri='/{username}/about', extensions=['json'])
+    @api_doc(section=api_section.users, uri='/user/{username}/about',
+             extensions=['json'])
     def GET_about(self, vuser):
         """Return information about the user, including karma and gold status."""
         if not is_api() or not vuser:
@@ -713,12 +746,17 @@ class MessageController(ListingController):
     @property
     def menus(self):
         if c.default_sr and self.where in ('inbox', 'messages', 'comments',
-                          'selfreply', 'unread'):
-            buttons = (NavButton(_("all"), "inbox"),
+                          'selfreply', 'unread', 'mentions'):
+            buttons = [NavButton(_("all"), "inbox"),
                        NavButton(_("unread"), "unread"),
                        NavButton(plurals.messages, "messages"),
                        NavButton(_("comment replies"), 'comments'),
-                       NavButton(_("post replies"), 'selfreply'))
+                       NavButton(_("post replies"), 'selfreply')]
+
+            if c.user.gold:
+                buttons += [NavButton(_("username mentions"),
+                                      "mentions",
+                                      css_class="gold")]
 
             return [NavMenu(buttons, base_path = '/message/',
                             default = 'inbox', type = "flatlist")]
@@ -745,6 +783,10 @@ class MessageController(ListingController):
             # don't show user their own unread stuff
             if ((self.where == 'unread' or self.subwhere == 'unread')
                 and (item.author_id == c.user._id or not item.new)):
+                return False
+
+            if (item.message_style == "mention" and
+                c.user.name.lower() not in extract_user_mentions(item.body)):
                 return False
 
             return wouldkeep
@@ -801,7 +843,7 @@ class MessageController(ListingController):
         return ListingController.builder(self)
 
     def listing(self):
-        if (self.where == 'messages' and 
+        if (self.where == 'messages' and
             (c.user.pref_threaded_messages or self.message)):
             return Listing(self.builder_obj).listing()
         pane = ListingController.listing(self)
@@ -820,6 +862,8 @@ class MessageController(ListingController):
             q = queries.get_inbox_comments(c.user)
         elif self.where == 'selfreply':
             q = queries.get_inbox_selfreply(c.user)
+        elif self.where == 'mentions':
+            q = queries.get_inbox_comment_mentions(c.user)
         elif self.where == 'inbox':
             q = queries.get_inbox(c.user)
         elif self.where == 'unread':
@@ -831,7 +875,9 @@ class MessageController(ListingController):
         elif self.where == 'moderator' and self.subwhere == 'unread':
             if c.default_sr:
                 srids = Subreddit.reverse_moderator_ids(c.user)
-                srs = Subreddit._byID(srids, data = False, return_dict = False)
+                srs = [sr for sr in Subreddit._byID(srids, data=False,
+                                                    return_dict=False)
+                       if sr.is_moderator_with_perms(c.user, 'mail')]
                 q = queries.get_unread_subreddit_messages_multi(srs)
             else:
                 q = queries.get_unread_subreddit_messages(c.site)
@@ -851,6 +897,7 @@ class MessageController(ListingController):
 
         return q
 
+    @require_oauth2_scope("privatemessages")
     @validate(VUser(),
               message = VMessageID('mid'),
               mark = VOneOf('mark',('true','false')))
@@ -858,7 +905,9 @@ class MessageController(ListingController):
                      uri='/message/{where}',
                      uri_variants=['/message/inbox', '/message/unread', '/message/sent'])
     def GET_listing(self, where, mark, message, subwhere = None, **env):
-        if not (c.default_sr or c.site.is_moderator(c.user) or c.user_is_admin):
+        if not (c.default_sr
+                or c.site.is_moderator_with_perms(c.user, 'mail')
+                or c.user_is_admin):
             abort(403, "forbidden")
         if isinstance(c.site, MultiReddit):
             if not (c.user_is_admin or c.site.is_moderator(c.user)):
@@ -897,7 +946,13 @@ class RedditsController(ListingController):
     render_cls = SubredditsPage
 
     def title(self):
-        return _('reddits')
+        return _('subreddits')
+
+    def keep_fn(self):
+        base_keep_fn = ListingController.keep_fn(self)
+        def keep(item):
+            return base_keep_fn(item) and (c.over18 or not item.over_18)
+        return keep
 
     def query(self):
         if self.where == 'banned' and c.user_is_admin:
@@ -926,17 +981,14 @@ class RedditsController(ListingController):
                 # don't try to render special subreddits (like promos)
                 reddits._filter(Subreddit.c.author_id != -1)
 
-            if not c.over18:
-                reddits._filter(Subreddit.c.over_18 == False)
-
         if self.where == 'popular':
             self.render_params = {"show_interestbar": True}
 
         return reddits
 
     @listing_api_doc(section=api_section.subreddits,
-                     uri='/reddits/{where}',
-                     uri_variants=['/reddits/popular', '/reddits/new', '/reddits/banned'])
+                     uri='/subreddits/{where}',
+                     uri_variants=['/subreddits/popular', '/subreddits/new', '/subreddits/banned'])
     def GET_listing(self, where, **env):
         self.where = where
         return ListingController.GET_listing(self, **env)
@@ -945,8 +997,8 @@ class MyredditsController(ListingController, OAuth2ResourceController):
     render_cls = MySubredditsPage
 
     def pre(self):
-        ListingController.pre(self)
         self.check_for_bearer_token()
+        ListingController.pre(self)
 
     @property
     def menus(self):
@@ -954,11 +1006,19 @@ class MyredditsController(ListingController, OAuth2ResourceController):
                     NavButton(getattr(plurals, "approved submitter"), 'contributor'),
                     NavButton(plurals.moderator,   'moderator'))
 
-        return [NavMenu(buttons, base_path = '/reddits/mine/',
+        return [NavMenu(buttons, base_path = '/subreddits/mine/',
                         default = 'subscriber', type = "flatlist")]
 
     def title(self):
-        return _('reddits: ') + self.where
+        return _('subreddits: ') + self.where
+
+    def builder_wrapper(self, thing):
+        w = ListingController.builder_wrapper(thing)
+        if self.where == 'moderator':
+            is_moderator = thing.is_moderator(c.user)
+            if is_moderator:
+                w.mod_permissions = is_moderator.get_permissions()
+        return w
 
     def query(self):
         reddits = SRMember._query(SRMember.c._name == self.where,
@@ -997,11 +1057,11 @@ class MyredditsController(ListingController, OAuth2ResourceController):
 
         return ListingController.build_listing(self, after=after, **kwargs)
 
-    @require_oauth2_scope("myreddits")
+    @require_oauth2_scope("mysubreddits")
     @validate(VUser())
     @listing_api_doc(section=api_section.subreddits,
-                     uri='/reddits/mine/{where}',
-                     uri_variants=['/reddits/mine/subscriber', '/reddits/mine/contributor', '/reddits/mine/moderator'])
+                     uri='/subreddits/mine/{where}',
+                     uri_variants=['/subreddits/mine/subscriber', '/subreddits/mine/contributor', '/subreddits/mine/moderator'])
     def GET_listing(self, where='subscriber', **env):
         self.where = where
         return ListingController.GET_listing(self, **env)
@@ -1009,10 +1069,43 @@ class MyredditsController(ListingController, OAuth2ResourceController):
 class CommentsController(ListingController):
     title_text = _('comments')
 
+    def keep_fn(self):
+        def keep(item):
+            can_see_spam = (c.user_is_loggedin and
+                            (item.author_id == c.user._id or
+                             c.user_is_admin or
+                             item.subreddit.is_moderator(c.user)))
+            can_see_deleted = c.user_is_loggedin and c.user_is_admin
+
+            return ((not item._spam or can_see_spam) and
+                    (not item._deleted or can_see_deleted))
+
+        return keep
+
     def query(self):
         return c.site.get_all_comments()
 
+    @require_oauth2_scope("read")
     def GET_listing(self, **env):
         c.profilepage = True
         return ListingController.GET_listing(self, **env)
 
+
+class GildedController(ListingController):
+    title_text = _("gilded comments")
+
+    def keep_fn(self):
+        def keep(item):
+            return item.gildings > 0 and not item._deleted and not item._spam
+        return keep
+
+    def query(self):
+        try:
+            return c.site.get_gilded_comments()
+        except NotImplementedError:
+            abort(404)
+
+    @require_oauth2_scope("read")
+    def GET_listing(self, **env):
+        c.profilepage = True
+        return ListingController.GET_listing(self, **env)

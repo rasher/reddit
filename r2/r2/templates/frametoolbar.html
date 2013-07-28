@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -36,8 +36,7 @@
   toolbar = new toolbar_p("${panel_size('expanded')}", "${panel_size('collapsed')}");
 </%def>
 
-<%def name="bodyHTML()">
-<body class="toolbar">
+<%def name="bodyContent()">
   <div class="preload">
     ## everything in here will get rendered off screen for pre-fetching purposes.
     <div class="arrow up"></div>
@@ -102,7 +101,7 @@
       </a>
     %endif
 
-    <a target="_top" href="/help/toolbar">
+    <a target="_top" href="/wiki/toolbar">
       <img src="${static('help.png')}"
            width="11" height="11"
            alt="${_('help')}" title="${_('help')}" />
@@ -151,7 +150,6 @@
       </div>
     </div>
   </div>
-</body>
 </%def>
 
 

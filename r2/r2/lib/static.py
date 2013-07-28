@@ -17,7 +17,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -27,6 +27,24 @@ import hashlib
 import json
 import base64
 import shutil
+
+
+def locate_static_file(name):
+    from pylons import g
+    static_dirs = [plugin.static_dir for plugin in g.plugins]
+    static_dirs.insert(0, g.paths['static_files'])
+
+    for static_dir in static_dirs:
+        file_path = os.path.join(static_dir, name.lstrip('/'))
+        if os.path.exists(file_path):
+            return file_path
+
+
+def static_mtime(name):
+    path = locate_static_file(name)
+    if path:
+        return os.path.getmtime(path)
+
 
 def generate_static_name(name, base=None):
     """Generate a unique filename.
@@ -43,6 +61,7 @@ def generate_static_name(name, base=None):
     shorthash = base64.urlsafe_b64encode(sha[0:8]).rstrip("=")
     name, ext = os.path.splitext(name)
     return name + '.' + shorthash + ext
+
 
 def update_static_names(names_file, files):
     """Generate a unique file name mapping for ``files`` and write it to a
@@ -61,12 +80,18 @@ def update_static_names(names_file, files):
         if not os.path.islink(path):
             mangled_path = os.path.join(base, mangled_name)
             shutil.move(path, mangled_path)
+            # When on NFS, cp has a bad habit of turning our symlinks into
+            # hardlinks. shutil.move will then call rename which will noop in
+            # the case of hardlinks to the same inode.
+            if os.path.exists(path):
+                os.unlink(path)
             os.symlink(mangled_name, path)
 
     json_enc = json.JSONEncoder(indent=2, sort_keys=True)
     open(names_file, "w").write(json_enc.encode(names))
 
     return names
+
 
 if __name__ == "__main__":
     update_static_names(sys.argv[1], sys.argv[2:])

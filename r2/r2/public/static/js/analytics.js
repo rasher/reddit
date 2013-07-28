@@ -1,71 +1,81 @@
 r.analytics = {
     trackers: {},
+    _pendingTrackers: {},
 
     init: function() {
         // these guys are relying on the custom 'onshow' from jquery.reddit.js
         $(document).delegate(
-            '.promotedlink.promoted, .sponsorshipbox',
+            '.promotedlink.promoted',
             'onshow',
-            $.proxy(this, 'fetchTrackersOrFirePixel')
+            _.bind(function(ev) {
+                this.fetchTrackersOrFirePixel(ev.target)
+            }, this)
         )
 
-        $('.promotedlink.promoted:visible, .sponsorshipbox:visible').trigger('onshow')
+        $('.promotedlink.promoted:visible').trigger('onshow')
+        $('form.google-checkout').on('submit', this.fireGoogleCheckout)
+        $('form.gold-checkout').one('submit', this.fireGoldCheckout)
     },
 
-    fetchTrackingHashes: function(callback) {
-        var fullnames = []
+    fetchTrackingHash: function(el) {
+        /*------------------------------------------* 
+           Generates a trackingName like:
+           t3_ab-t8_99-pics if targeted with campaign
+           t3_ab-t8_99      not targeted with campaign
+           t3_ab--pics      targeted with no campaign
+           t3_ab-           not targeted, no campaign 
+         *------------------------------------------*/
 
-        $('.promotedlink.promoted, .sponsorshipbox')
-            .each(function() {
-                var thing = $(this),
-                    fullname = thing.data('fullname'),
-                    sponsorship = thing.data('sponsorship')
+        var $el = $(el),
+            fullname = $el.data('fullname'),
+            campaign = $el.data('cid'),
+            trackingName = fullname
 
-                if (sponsorship)
-                    fullname += '_' + sponsorship
+        // append a hyphen even if there's no campaign
+        trackingName += '-' + (campaign || '')
 
-                if (!r.config.is_fake)
-                    fullname += '-' + r.config.post_site
+        if (!r.config.is_fake)
+            trackingName += '-' + r.config.post_site
 
-                thing.data('trackingName', fullname)
+        // if we don't have a hash or a deferred fetch, queue a fetch
+        if (!(trackingName in this.trackers)) {
+            this._pendingTrackers[trackingName] = this.trackers[trackingName] = new $.Deferred
+            this.fetchTrackingHashes()
+        }
 
-                if (!(fullname in r.analytics.trackers))
-                    fullnames.push(fullname)
-            })
+        return this.trackers[trackingName]
+    },
 
+    fetchTrackingHashes: _.debounce(function() {
+        var toFetch = this._pendingTrackers
         $.ajax({
-            url: 'http://' + r.config.tracking_domain + '/fetch-trackers',
+            url: r.config.fetch_trackers_url,
             type: 'get',
             dataType: 'jsonp',
-            data: { 'ids': fullnames },
+            data: {'ids': _.keys(toFetch)},
             success: function(data) {
-                $.extend(r.analytics.trackers, data)
-                callback()
+                _.each(data, function(hash, trackingName) {
+                    toFetch[trackingName].resolve(trackingName, hash)
+                })
             }
         })
+        this._pendingTrackers = {}
+    }, 0),
+
+    fetchTrackersOrFirePixel: function(el) {
+        this.fetchTrackingHash(el).done(_.bind(function(trackingName, hash) {
+            this.fireTrackingPixel(el, trackingName, hash)
+        }, this))
     },
 
-    fetchTrackersOrFirePixel: function(e) {
-        var target = $(e.target),
-            fullname = target.data('fullname')
-
-        if (fullname in this.trackers) {
-            this.fireTrackingPixel(target)
-        } else {
-            this.fetchTrackingHashes($.proxy(this, 'fireTrackingPixel', target))
-        }
-    },
-
-    fireTrackingPixel: function(thing) {
-        if (thing.data('trackerFired'))
+    fireTrackingPixel: function(el, trackingName, hash) {
+        var $el = $(el)
+        if ($el.data('trackerFired'))
             return
-
-        var fullname = thing.data('trackingName'),
-            hash = this.trackers[fullname]
 
         var pixel = new Image()
         pixel.src = r.config.adtracker_url + '?' + $.param({
-            'id': fullname,
+            'id': trackingName,
             'hash': hash,
             'r': Math.round(Math.random() * 2147483647) // cachebuster
         })
@@ -74,11 +84,11 @@ r.analytics = {
         // (e.g. it has an @ in it), then setting the href replaces the
         // text as well. We'll store the original text and replace it to
         // hack around this. Distilled reproduction in: http://jsfiddle.net/JU2Vj/1/
-        var link = thing.find('a.title'),
+        var link = $el.find('a.title'),
             old_html = link.html(),
             dest = link.attr('href'),
             click_url = r.config.clicktracker_url + '?' + $.param({
-            'id': fullname,
+            'id': trackingName,
             'hash': hash,
             'url': dest
         })
@@ -90,11 +100,11 @@ r.analytics = {
             link.html(old_html)
 
         // also do the thumbnail
-        var thumb = thing.find('a.thumbnail')
+        var thumb = $el.find('a.thumbnail')
         save_href(thumb)
         thumb.attr('href', click_url)
 
-        thing.data('trackerFired', true)
+        $el.data('trackerFired', true)
     },
 
     fireUITrackingPixel: function(action, srname) {
@@ -109,11 +119,39 @@ r.analytics = {
                 r.analytics.breadcrumbs.toParams()
             )
         )
+    },
+
+    fireGoldCheckout: function(event) {
+        var form = $(this),
+            vendor = form.data('vendor')
+        form.parent().addClass('working')
+        
+        // Track a virtual pageview indicating user went off-site to "vendor."
+        // If GA is loaded, have GA process form submission after firing
+        // (and cancel the default).
+        _gaq.push(['_trackPageview', '/gold/external/' + vendor])
+        _gaq.push(function(){ form.submit() })
+        
+        if (_gat && _gat._getTracker){
+          // GA is loaded; form will submit via the _gaq.push'ed function
+          event.preventDefault()
+        }
+    },
+    
+    fireGoogleCheckout: function(event) {
+        var form = $(this)
+        form.parent().addClass('working')
+        _gaq.push(function(){
+          var pageTracker = _gaq._getAsyncTracker()
+          setUrchinInputCode(pageTracker)
+        })
     }
 }
 
 r.analytics.breadcrumbs = {
     selector: '.thing, .side, .sr-list, .srdrop, .tagline, .md, .organic-listing, .gadget, .sr-interest-bar, a, button, input',
+    maxLength: 3,
+    sendLength: 2,
 
     init: function() {
         this.hasSessionStorage = this._checkSessionStorage()
@@ -159,7 +197,7 @@ r.analytics.breadcrumbs = {
         return data
     },
 
-    store: function(data) {
+    store: function() {
         if (this.hasSessionStorage) {
             sessionStorage['breadcrumbs'] = JSON.stringify(this.data)
         }
@@ -180,19 +218,33 @@ r.analytics.breadcrumbs = {
         }
 
         this.data.unshift(cur)
-        this.data = this.data.slice(0, 2)
+        this.data = this.data.slice(0, this.maxLength)
         this.store()
     },
 
     storeLastClick: function(el) {
-        this.data[0]['click'] =
-            r.utils.querySelectorFromEl(el, this.selector)
-        this.store()
+        try {
+            this.data[0]['click'] =
+                r.utils.querySelectorFromEl(el, this.selector)
+            this.store()
+        } catch (e) {
+            // Band-aid for Firefox NS_ERROR_DOM_SECURITY_ERR until fixed.
+        }
+    },
+
+    lastClickFullname: function() {
+        var lastClick = _.find(this.data, function(crumb) {
+            return crumb.click
+        })
+        if (lastClick) {
+            var match = lastClick.click.match(/.*data-fullname="(\w+)"/)
+            return match && match[1]
+        }
     },
 
     toParams: function() {
         params = []
-        for (var i = 0; i < this.data.length; i++) {
+        for (var i = 0; i < this.sendLength; i++) {
             _.each(this.data[i], function(v, k) {
                 params['c'+i+'_'+k] = v
             })

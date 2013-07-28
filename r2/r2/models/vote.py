@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -26,9 +26,8 @@ import collections
 from r2.lib.db.thing import MultiRelation, Relation
 from r2.lib.db import tdb_cassandra
 from r2.lib.db.tdb_cassandra import TdbException, ASCII_TYPE, UTF8_TYPE
-from r2.lib.utils._utils import flatten
 from r2.lib.db.sorts import epoch_seconds
-from r2.lib.utils import SimpleSillyStub
+from r2.lib.utils import SimpleSillyStub, Storage
 
 from account import Account
 from link import Link, Comment
@@ -36,7 +35,7 @@ from link import Link, Comment
 from pylons import g
 from datetime import datetime, timedelta
 
-__all__ = ['Vote', 'CassandraLinkVote', 'CassandraCommentVote', 'score_changes']
+__all__ = ['Vote', 'score_changes']
 
 def score_changes(amount, old_amount):
     uc = dc = 0
@@ -49,123 +48,11 @@ def score_changes(amount, old_amount):
     elif oa < 0 and a > 0: dc = oa; uc = a
     return uc, dc
 
-class CassandraVote(tdb_cassandra.Relation):
-    _use_db = False
-    _connection_pool = 'main'
-
-    _bool_props = ('valid_user', 'valid_thing', 'organic')
-    _str_props  = ('name', # one of '-1', '0', '1'
-                   'notes', 'ip')
-
-    _defaults = {'organic': False}
-    _default_ttls = {'ip': 30*24*60*60}
-
-    @classmethod
-    def _rel(cls, thing1_cls, thing2_cls):
-        if (thing1_cls, thing2_cls) == (Account, Link):
-            return CassandraLinkVote
-        elif (thing1_cls, thing2_cls) == (Account, Comment):
-            return CassandraCommentVote
-
-        raise TdbException("Can't find relation for %r(%r,%r)"
-                           % (cls, thing1_cls, thing2_cls))
-
-    @classmethod
-    def _copy_from(cls, v):
-        voter = v._thing1
-        votee = v._thing2
-        cvc = cls._rel(Account, votee.__class__)
-        try:
-            cv = cvc._fast_query(voter, votee)
-        except tdb_cassandra.NotFound:
-            cv = cvc(thing1_id = voter._id36, thing2_id = votee._id36)
-        cv.name = v._name
-        cv.valid_user, cv.valid_thing = v.valid_user, v.valid_thing
-        if hasattr(v, 'ip'):
-            cv.ip = v.ip
-        if getattr(v, 'organic', False) or hasattr(cv, 'organic'):
-            cv.organic = getattr(v, 'organic', False)
-        cv._commit()
-
-
-class VotesByThing(tdb_cassandra.View):
-    _use_db = False
-    _connection_pool = 'main'
-
-    _view_of = None
-
-    @classmethod
-    def get_all(cls, *thing_ids):
-        vbts = cls._byID(thing_ids)
-        
-        lists = [vbt._values().keys() for vbt in vbts.values()]
-        vals = flatten(lists)
-        
-        return cls._view_of._byID(vals).values()
-
-
-class VotesByLink(VotesByThing):
-    _use_db = True
-    _type_prefix = 'VotesByLink'
-    # _view_of = CassandraLinkVote
-
-    @classmethod
-    def _rowkey(cls, cassandra_link_vote):
-        return cassandra_link_vote.thing2_id
-
-
-class VotesByComment(VotesByThing):
-    _use_db = True
-    _type_prefix = 'VotesByComment'
-    # _view_of = CassandraCommentVote
-
-    @classmethod
-    def _rowkey(cls, cassandra_comment_vote):
-        return cassandra_comment_vote.thing2_id
-
-
-class CassandraThingVote(CassandraVote):
-    _use_db = False
-    _views = []
-    _read_consistency_level = tdb_cassandra.CL.ONE
-
-    def _on_create(self):
-        wcl = tdb_cassandra.CL.ONE
-        v_id = {self._id: ''}
-
-        for view in self._views:
-            view._set_values(view._rowkey(self), v_id,
-                             write_consistency_level=wcl)
-
-        return CassandraVote._on_create(self)
-
-class CassandraLinkVote(CassandraThingVote):
-    _use_db = True
-    _type_prefix = 'LinkVote'
-    _cf_name = 'LinkVote'
-    _views = [VotesByLink]
-    _thing1_cls = Account
-    _thing2_cls = Link
-
-
-VotesByLink._view_of = CassandraLinkVote
-
-
-class CassandraCommentVote(CassandraThingVote):
-    _use_db = True
-    _type_prefix = 'CommentVote'
-    _cf_name = 'CommentVote'
-    _views = [VotesByComment]
-    _thing1_cls = Account
-    _thing2_cls = Comment
-
-
-VotesByComment._view_of = CassandraCommentVote
-
 
 class VotesByAccount(tdb_cassandra.DenormalizedRelation):
     _use_db = False
     _thing1_cls = Account
+    _read_consistency_level = tdb_cassandra.CL.ONE
 
     @classmethod
     def rel(cls, thing1_cls, thing2_cls):
@@ -191,17 +78,20 @@ class LinkVotesByAccount(VotesByAccount):
     _use_db = True
     _thing2_cls = Link
     _views = []
+    _last_modified_name = "LinkVote"
 
 
 class CommentVotesByAccount(VotesByAccount):
     _use_db = True
     _thing2_cls = Comment
     _views = []
+    _last_modified_name = "CommentVote"
 
 
 class VoteDetailsByThing(tdb_cassandra.View):
     _use_db = False
-    _ttl = 60 * 60 * 24 * 30
+    _ttl = timedelta(days=90)
+    _fetch_all_columns = True
     _extra_schema_creation_args = dict(key_validation_class=ASCII_TYPE,
                                        default_validation_class=UTF8_TYPE)
 
@@ -221,7 +111,29 @@ class VoteDetailsByThing(tdb_cassandra.View):
             organic=getattr(pgvote, "organic", False),
         )
 
-        cls._set_values(voter._id36, {votee._id36: json.dumps(details)})
+        cls._set_values(votee._id36, {voter._id36: json.dumps(details)})
+
+    @classmethod
+    def get_details(cls, thing):
+        if isinstance(thing, Link):
+            details_cls = VoteDetailsByLink
+        elif isinstance(thing, Comment):
+            details_cls = VoteDetailsByComment
+        else:
+            raise ValueError
+
+        try:
+            raw_details = details_cls._byID(thing._id36)._values()
+        except tdb_cassandra.NotFound:
+            raw_details = {}
+        details = []
+        for key, value in raw_details.iteritems():
+            data = Storage(json.loads(value))
+            data["_id"] = key + "_" + thing._id36
+            data["voter_id"] = key
+            details.append(data)
+        details.sort(key=lambda d: d["date"])
+        return details
 
 
 @tdb_cassandra.view_of(LinkVotesByAccount)
@@ -241,7 +153,7 @@ class Vote(MultiRelation('vote',
 
     @classmethod
     def vote(cls, sub, obj, dir, ip, organic = False, cheater = False,
-             timer=None):
+             timer=None, date=None):
         from admintools import valid_user, valid_thing, update_score
         from r2.lib.count import incr_sr_count
         from r2.lib.db import queries
@@ -276,14 +188,14 @@ class Vote(MultiRelation('vote',
             old_valid_thing = getattr(v, 'valid_thing', False)
             v.valid_thing = (valid_thing(v, karma, cheater = cheater)
                              and getattr(v,'valid_thing', False))
-            v.valid_user = (getattr(v, 'valid_user', False)                   
+            v.valid_user = (getattr(v, 'valid_user', False)
                             and v.valid_thing
                             and valid_user(v, sr, karma))
         #new vote
         else:
             is_new = True
             oldamount = 0
-            v = rel(sub, obj, str(amount))
+            v = rel(sub, obj, str(amount), date=date)
             v.ip = ip
             old_valid_thing = v.valid_thing = valid_thing(v, karma, cheater = cheater)
             v.valid_user = (v.valid_thing and valid_user(v, sr, karma)
@@ -317,7 +229,6 @@ class Vote(MultiRelation('vote',
 
         # now write it out to Cassandra. We'll write it out to both
         # this way for a while
-        CassandraVote._copy_from(v)
         VotesByAccount.copy_from(v)
         timer.intermediate("cassavotes")
 
@@ -328,19 +239,16 @@ class Vote(MultiRelation('vote',
 
     @classmethod
     def likes(cls, sub, objs):
-        # generalise and put on all abstract relations?
-
         if not sub or not objs:
             return {}
 
         from r2.models import Account
-
         assert isinstance(sub, Account)
 
         rels = {}
         for obj in objs:
             try:
-                types = CassandraVote._rel(sub.__class__, obj.__class__)
+                types = VotesByAccount.rel(sub.__class__, obj.__class__)
             except TdbException:
                 # for types for which we don't have a vote rel, we'll
                 # skip them
@@ -348,78 +256,11 @@ class Vote(MultiRelation('vote',
 
             rels.setdefault(types, []).append(obj)
 
+        dirs_by_name = {"1": True, "0": None, "-1": False}
 
         ret = {}
-
         for relcls, items in rels.iteritems():
-            votes = relcls._fast_query(sub, items,
-                                       properties=['name'])
-            for cross, rel in votes.iteritems():
-                ret[cross] = (True if rel.name == '1'
-                              else False if rel.name == '-1'
-                              else None)
+            votes = relcls.fast_query(sub, items)
+            for cross, name in votes.iteritems():
+                ret[cross] = dirs_by_name[name]
         return ret
-
-def test():
-    from r2.models import Link, Account, Comment
-    from r2.lib.db.tdb_cassandra import thing_cache
-
-    assert CassandraVote._rel(Account, Link) == CassandraLinkVote
-    assert CassandraVote._rel(Account, Comment) == CassandraCommentVote
-
-    v1 = CassandraLinkVote('abc', 'def', valid_thing=True, valid_user=False)
-    v1.testing = 'lala'
-    v1._commit()
-    print 'v1', v1, v1._id, v1._t
-
-    v2 = CassandraLinkVote._byID('abc_def')
-    print 'v2', v2, v2._id, v2._t
-
-    if v1 != v2:
-        # this can happen after running the test more than once, it's
-        # not a big deal
-        print "Expected %r to be the same as %r" % (v1, v2)
-
-    v2.testing = 'lala'
-    v2._commit()
-    v1 = None # invalidated this
-
-    assert CassandraLinkVote._byID('abc_def') == v2
-
-    CassandraLinkVote('abc', 'ghi', name='1')._commit()
-
-    try:
-        print v2.falsy
-        raise Exception("Got an attribute that doesn't exist?")
-    except AttributeError:
-        pass
-
-    try:
-        assert Vote('1', '2') is None
-        raise Exception("I shouldn't be able to create _use_db==False instances")
-    except TdbException:
-        print "You can safely ignore the warning about discarding the uncommitted '1_2'"
-    except CassandraException:
-        print "Seriously?"
-    except Exception, e:
-        print id(e.__class__), id(TdbException.__class__)
-        print isinstance(e, TdbException)
-        print 'Huh?', repr(e)
-
-    try:
-        CassandraLinkVote._byID('bacon')
-        raise Exception("I shouldn't be able to look up items that don't exist")
-    except NotFound:
-        pass
-
-    print 'fast_query', CassandraLinkVote._fast_query('abc', ['def'])
-
-    assert CassandraLinkVote._fast_query('abc', 'def') == v2
-    assert CassandraLinkVote._byID('abc_def') == CassandraLinkVote._by_fullname('LinkVote_abc_def')
-
-    print 'all', list(CassandraLinkVote._all()), list(VotesByLink._all())
-
-    print 'all_by_link', VotesByLink.get_all('abc')
-
-    print 'Localcache:', dict(thing_cache.caches[0])
-

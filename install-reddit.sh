@@ -17,7 +17,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -57,6 +57,11 @@ REDDIT_HOME=/home/$REDDIT_USER
 # not be writable by the reddit user.
 REDDIT_OWNER=reddit
 
+# the domain that you will connect to your reddit install with.
+# MUST contain a . in it somewhere as browsers won't do cookies for dotless
+# domains. an IP address will suffice if nothing else is available.
+REDDIT_DOMAIN=${REDDIT_DOMAIN:-reddit.local}
+
 ###############################################################################
 # Sanity Checks
 ###############################################################################
@@ -66,12 +71,12 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # seriously! these checks aren't here for no reason. the packages from the
-# reddit ppa aren't built for anything but natty (11.04) right now, so
+# reddit ppa aren't built for anything but precise (12.04) right now, so
 # if you try and use this install script on another release you're gonna
 # have a bad time.
 source /etc/lsb-release
-if [ "$DISTRIB_ID" != "Ubuntu" -o "$DISTRIB_RELEASE" != "11.04" ]; then
-    echo "ERROR: Only Ubuntu 11.04 is supported."
+if [ "$DISTRIB_ID" != "Ubuntu" -o "$DISTRIB_RELEASE" != "12.04" ]; then
+    echo "ERROR: Only Ubuntu 12.04 is supported."
     exit 1
 fi
 
@@ -89,9 +94,13 @@ fi
 APTITUDE_OPTIONS="-y" # limit bandwidth: -o Acquire::http::Dl-Limit=100"
 export DEBIAN_FRONTEND=noninteractive
 
+# run an aptitude update to make sure python-software-properties
+# dependencies are found
+apt-get update
+
 # add the reddit ppa for some custom packages
 apt-get install $APTITUDE_OPTIONS python-software-properties
-apt-add-repository ppa:reddit/ppa
+apt-add-repository -y ppa:reddit/ppa
 
 # pin the ppa -- packages present in the ppa will take precedence over
 # ones in other repositories (unless further pinning is done)
@@ -115,7 +124,7 @@ python-pylons
 python-boto
 python-tz
 python-crypto
-python-pybabel
+python-babel
 cython
 python-sqlalchemy
 python-beautifulsoup
@@ -129,12 +138,14 @@ python-pycaptcha
 python-amqplib
 python-pylibmc
 python-bcrypt
-python-python-statsd
 python-snudown
 python-l2cs
-python-cjson
 python-lxml
+python-zope.interface
+python-kazoo
+python-stripe
 
+nodejs
 gettext
 make
 optipng
@@ -177,11 +188,11 @@ fi
 cd $REDDIT_HOME
 
 if [ ! -d $REDDIT_HOME/reddit ]; then
-    sudo -u $REDDIT_OWNER git clone git://github.com/reddit/reddit.git
+    sudo -u $REDDIT_OWNER git clone https://github.com/reddit/reddit.git
 fi
 
 if [ ! -d $REDDIT_HOME/reddit-i18n ]; then
-    sudo -u $REDDIT_OWNER git clone git://github.com/reddit/reddit-i18n.git
+    sudo -u $REDDIT_OWNER git clone https://github.com/reddit/reddit-i18n.git
 fi
 
 ###############################################################################
@@ -204,7 +215,7 @@ IS_DATABASE_CREATED=$(sudo -u postgres psql -t -c "$SQL")
 
 if [ $IS_DATABASE_CREATED -ne 1 ]; then
     cat <<PGSCRIPT | sudo -u postgres psql
-CREATE DATABASE reddit WITH ENCODING = 'utf8';
+CREATE DATABASE reddit WITH ENCODING = 'utf8' TEMPLATE template0;
 CREATE USER reddit WITH PASSWORD 'password';
 PGSCRIPT
 fi
@@ -263,6 +274,8 @@ page_cache_time = 0
 
 set debug = true
 
+domain = $REDDIT_DOMAIN
+
 [server:main]
 port = 8001
 DEVELOPMENT
@@ -280,6 +293,8 @@ reload_templates = false
 uncompressedJS = false
 
 set debug = false
+
+domain = $REDDIT_DOMAIN
 
 [server:main]
 port = 8001
@@ -302,6 +317,12 @@ if [ -e /etc/haproxy/haproxy.cfg ]; then
     cat /etc/haproxy/haproxy.cfg > $BACKUP_HAPROXY
 fi
 
+# make sure haproxy is enabled
+cat > /etc/default/haproxy <<DEFAULT
+ENABLED=1
+DEFAULT
+
+# configure haproxy
 cat > /etc/haproxy/haproxy.cfg <<HAPROXY
 global
     maxconn 100
@@ -330,6 +351,7 @@ service haproxy restart
 ###############################################################################
 # Upstart Environment
 ###############################################################################
+CONSUMER_CONFIG_ROOT=$REDDIT_HOME/consumer-count.d
 cp $REDDIT_HOME/reddit/upstart/* /etc/init/
 
 if [ ! -f /etc/default/reddit ]; then
@@ -338,7 +360,7 @@ export REDDIT_ROOT=$REDDIT_HOME/reddit/r2
 export REDDIT_INI=$REDDIT_HOME/reddit/r2/run.ini
 export REDDIT_USER=$REDDIT_USER
 export REDDIT_GROUP=$REDDIT_GROUP
-export REDDIT_CONSUMER_CONFIG=$REDDIT_HOME/consumer-counts
+export REDDIT_CONSUMER_CONFIG=$CONSUMER_CONFIG_ROOT
 alias wrap-job=$REDDIT_HOME/reddit/scripts/wrap-job
 alias manage-consumers=$REDDIT_HOME/reddit/scripts/manage-consumers
 DEFAULT
@@ -347,17 +369,21 @@ fi
 ###############################################################################
 # Queue Processors
 ###############################################################################
-if [ ! -f $REDDIT_HOME/consumer-counts ]; then
-    cat > $REDDIT_HOME/consumer-counts <<COUNTS
-log_q           0
-cloudsearch_q   1
-scraper_q       1
-commentstree_q  1
-newcomments_q   1
-vote_comment_q  1
-vote_link_q     1
-COUNTS
-fi
+mkdir -p $CONSUMER_CONFIG_ROOT
+
+function set_consumer_count {
+    if [ ! -f $CONSUMER_CONFIG_ROOT/$1 ]; then
+        echo $2 > $CONSUMER_CONFIG_ROOT/$1
+    fi
+}
+
+set_consumer_count log_q 0
+set_consumer_count cloudsearch_q 0
+set_consumer_count scraper_q 0
+set_consumer_count commentstree_q 1
+set_consumer_count newcomments_q 1
+set_consumer_count vote_link_q 1
+set_consumer_count vote_comment_q 1
 
 initctl emit reddit-start
 
@@ -412,8 +438,7 @@ See the GitHub wiki for more information on these jobs:
 Now that the core of reddit is installed, you may want to do some additional
 steps:
 
-* Add "reddit.local" to your /etc/hosts file as an alias for 127.0.0.1
-  (or add it to your host OS's resolver configuration if running in a VM)
+* Ensure that $REDDIT_DOMAIN resolves to this machine.
 
 * To populate the database with test data, run:
 

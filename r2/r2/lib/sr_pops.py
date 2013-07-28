@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -27,7 +27,7 @@ from r2.lib.utils import fetch_things2, flatten
 from r2.lib.memoize import memoize
 
 # the length of the stored per-language list
-limit = 1000
+limit = 2500
 
 def set_downs():
     sr_counts = count.get_sr_counts()
@@ -57,7 +57,7 @@ def cache_lists():
             continue
 
         type = getattr(sr, 'type', 'private')
-        if type not in ('public', 'restricted'):
+        if type not in ('public', 'restricted', 'gold_restricted'):
             # skips reddits that can't appear in the default list
             # because of permissions
             continue

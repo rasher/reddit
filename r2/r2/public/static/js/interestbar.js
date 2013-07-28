@@ -22,20 +22,23 @@ r.ui.InterestBar.prototype = {
     keyPressed: function() {
         var query = this.$query.val()
         query = $.trim(query)
-        if (query != this._lastQuery) {
+        if (query == this._lastQuery) {
+            return
+        } else {
             this._lastQuery = query
-            this.$el.addClass('working')
-            this.queryChangedDebounced(query)
         }
 
-        if (!query) {
-            this.$el.removeClass('working error')
+        this.queryChangedDebounced(query)
+        if (query && query.length > 1) {
+            this.$el.addClass('working')
+        } else {
             this.hideResults()
+            this.$el.removeClass('working error')
         }
     },
 
     queryChanged: function(query) {
-        if (query) {
+        if (query && query.length > 1) {
             $.ajax({
                 url: '/api/subreddits_by_topic.json',
                 data: {'query': query},
@@ -74,7 +77,7 @@ r.ui.InterestBar.prototype = {
             .removeClass('working')
             .addClass('error')
             .find('.error-caption')
-                .text(r.strings.an_error_occurred_friendly + ' (' + xhr.status + ')')
+                .text(r.strings('an_error_occurred_friendly', {status: xhr.status}))
 
         this.hideResults()
     }

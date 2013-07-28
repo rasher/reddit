@@ -3,6 +3,10 @@
     height: 17px;
 }
 
+/* IE7 doesn't understand inline-block */
+.entry .flat-list.buttons li { display: inline; }
+.pretty-button { display: inline; }
+
 .entry.unvoted .score.unvoted { display: inline;  }
 .entry.unvoted div.score.unvoted { display: inline;  }
 
@@ -36,4 +40,14 @@
 
 #header-bottom-right {
 	clear: both;
+}
+
+.gilded-comment-icon {
+    background: url(gold-coin.png) no-repeat;
+    padding-left: 15px;
+    height: 14px;
+}
+
+.user-gilded > .entry .gilded-comment-icon {
+    padding-left: 25px;
 }

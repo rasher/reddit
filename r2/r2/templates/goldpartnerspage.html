@@ -1,0 +1,200 @@
+## The contents of this file are subject to the Common Public Attribution
+## License Version 1.0. (the "License"); you may not use this file except in
+## compliance with the License. You may obtain a copy of the License at
+## http://code.reddit.com/LICENSE. The License is based on the Mozilla Public
+## License Version 1.1, but Sections 14 and 15 have been added to cover use of
+## software over a computer network and provide for limited attribution for the
+## Original Developer. In addition, Exhibit A has been modified to be
+## consistent with Exhibit B.
+##
+## Software distributed under the License is distributed on an "AS IS" basis,
+## WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License for
+## the specific language governing rights and limitations under the License.
+##
+## The Original Code is reddit.
+##
+## The Original Developer is the Initial Developer.  The Initial Developer of
+## the Original Code is reddit Inc.
+##
+## All portions of the code written by reddit are Copyright (c) 2006-2013
+## reddit Inc. All Rights Reserved.
+###############################################################################
+<%!
+  from r2.lib.strings import strings
+  from r2.lib.template_helpers import static
+%>
+<%namespace file="goldinfopage.html" import="feature_item, goldinfo_header, goldinfo_footer"/>
+<%namespace file="less.html" import="less_stylesheet"/>
+<%namespace file="utils.html" import="_md"/>
+<%inherit file="reddit.html"/>
+
+<%def name="stylesheet()">
+  ${parent.stylesheet()}
+  ${less_stylesheet('goldinfo.less')}
+</%def>
+
+<%def name="partner_item(name, how_to_use, img_src, img_url=None, description_md='', extra_class='', button_dest=None, button_label=None)">
+  <%call expr="feature_item(name, img_src, description_md, extra_class, img_url)">
+    %if c.user.gold:
+      <div class="how-to-use">
+        ${_md(how_to_use)}
+      </div>
+    %endif
+    %if button_dest == 'claim':
+      %if name in thing.existing_codes:
+        <input class="code" type="text" value="${thing.existing_codes[name]}" readonly="readonly">
+      %elif c.user.gold:
+        <a class="claim-code-button" onclick="r.gold.claim_gold_partner_deal_code(this, '${name}')">${button_label or _('claim code')}</a>
+      %endif
+    %elif button_dest:
+      %if c.user.gold:
+        <a class="claim-code-button" href="${button_dest}">${button_label or _('visit partner')}</a>
+      %endif
+    %endif
+  </%call>
+</%def>
+
+<%def name="content()">
+  <section id="about-gold-partners">
+    ${goldinfo_header(_('reddit gold partners'),
+                      strings.gold_partners_description,
+                      css_class='large')}
+
+    ${partner_item('backblaze',
+                   _("Claim your code below, then visit https://secure.backblaze.com/gift/XXXXXXX (replacing Xs with your code), and click 'Redeem &amp; Download' to install the product and enter your email/password."),
+                   static('gold/partner-backblaze.png'), 
+                   img_url='http://backblaze.com',
+                   description_md=_('# Backblaze Online Backup\n'
+                                    '3 months of free service (new accounts only).'),
+                   button_dest='claim')}
+
+    ${partner_item('bartsbakery',
+                   _("Claim your code below, then enter it as a Coupon code in your cart at http://bartsbakery.com to get 20% off any product."),
+                   static('gold/partner-bartsbakery.png'), 
+                   img_url='http://bartsbakery.com',
+                   description_md=_("# Bart's Bakery Chocolate Chip Cookies\n"
+                                    'Cookies. Really good cookies. 20% off any product.'),
+                   extra_class='new',
+                   button_dest='claim')}
+
+    ${partner_item('betabrand',
+                   _("Claim your code below, then enter it as a Gift code in your cart at http://betabrand.com to get 20% off."),
+                   static('gold/partner-betabrand.png'), 
+                   img_url='http://betabrand.com',
+                   description_md=_('# Betabrand Unique Online Fashions\n'
+                                    'Presently Pantless? Get 20% off any item in our collection.'),
+                   extra_class='new',
+                   button_dest='claim')}
+
+    ${partner_item('empiremayo',
+                   _("Claim your code below, then use it during the second step of the checkout process at http://empiremayo.com."),
+                   static('gold/partner-empiremayo.png'),
+                   img_url='http://empiremayo.com',
+                   description_md=_('# Empire Mayonnaise\n'
+                                    'Exquisite mayonnaises. 15% discount (two uses per customer).'),
+                   button_dest='claim')}
+
+    ${partner_item('goldbely',
+                   _("Use the button below to visit Goldbely, then click *their* button and follow the process to authorize them to verify your gold status."),
+                   static('gold/partner-goldbely.png'),
+                   img_url='http://goldbely.com',
+                   description_md=_('# Goldbely Food Explorers\n'
+                                    'Gourmet dishes, delivered. $20 off purchases of $50 or more.'),
+                   button_dest='https://www.goldbely.com/reddit-gold',
+                   button_label=_('visit Goldbely'))}
+
+    ${partner_item('ifixit',
+                   _("Claim your code below, then enter it as a Coupon Code in your cart at http://ifixit.com for $20 off a $50+ order."),
+                   static('gold/partner-ifixit.png'),
+                   img_url='http://ifixit.com',
+                   description_md=_('# iFixit\n'
+                                    'Guides, parts and tools for repairs. $20 off purchases of $50 or more.'),
+                   extra_class='new',
+                   button_dest='claim')}
+
+    ${partner_item('outgrowme',
+                   _("Claim your code below, then use it during the second step of the checkout process at http://outgrow.me/gold."),
+                   static('gold/partner-outgrowme.png'),
+                   img_url='http://outgrow.me/gold',
+                   description_md=_('# Outgrow.me Marketplace\n'
+                                    'Successful crowd-funded items. 15% discount.'),
+                   extra_class='new',
+                   button_dest='claim')}
+
+    ${partner_item('redditgifts',
+                   _("Watch your reddit PMs to see if you're one of the lucky Golden Tikkit recipients!"),
+                   static('gold/partner-redditgifts.png'), 
+                   img_url='http://redditgifts.com',
+                   description_md=_('# redditgifts marketplace\n'
+                                    'With our "Golden Tikkit" program, five lucky gold members will be getting a t-shirt and 3 months of redditgifts Elves every week.'),
+                   extra_class='new')}
+
+    ${partner_item('uber',
+                   _("Claim your code below, then visit http://uber.com/app and enter the code while signing up."),
+                   static('gold/partner-uber.png'),
+                   img_url='http://uber.com',
+                   description_md=_('# Uber Private Car Service\n'
+                                    'Black car service requested via mobile app. $25 off your first ride (valid only in the US).'),
+                   extra_class='new',
+                   button_dest='claim')}
+
+    ${partner_item('uniqlo',
+                   _("Keep an eye on your reddit PMs, as once a week Uniqlo will be sending out a message to a lucky gold member. Redeem your free prize within 24 hours, and you'll be lookin' snazzy in no time!"),
+                   static('gold/partner-uniqlo.png'),
+                   img_url='http://uniqlo.com/us/',
+                   description_md=_('# Uniqlo Clothing\n'
+                                    'With our "Golden Tikkit" program, one lucky gold member will be getting some sweet new digs from Uniqlo every week.'),
+                   )}
+
+    ${partner_item('urbilis',
+                   _("Claim your code below, then use it during the second step of the checkout process at http://urbilis.com."),
+                   static('gold/partner-urbilis.png'),
+                   img_url='http://urbilis.com',
+                   description_md=_('# Urbilis Urban Gardening\n'
+                                    'Creative & elegant gardening solutions. $10 off purchases of $50 or more.'),
+                   button_dest='claim')}
+
+    <section id="terms" class="etc last">
+      <a href="#terms" onclick="$('#giveaway-rules').toggle()">View official rules for "Golden Tikkit" giveaways</a>
+      <div id="giveaway-rules">
+        <h2>REDDIT</h2>
+        <h2>OFFICIAL GIVEAWAY RULES</h2>
+
+        <p>reddit and its partners will be giving away prizes to reddit gold members! Please read these rules carefully as they govern our prize giveaways. By entering a giveaway, you agree that these rules will apply to you.</p>
+
+        <h3>How to Enter</h3>
+        <p>You don't need to buy anything to enter a giveaway or to win a prize. All eligible reddit gold members may participate in the giveaway. For more information about reddit gold membership, please see&#32;<a href="/gold/about">http://www.reddit.com/gold/about/</a>. The dates of the giveaways will be listed in the prize details below.</p>
+
+        <h3>Other Ways to Enter</h3>
+        <p>You can become a reddit gold member for one month by mailing a postcard to reddit c/o Wired, 520 Third Street, San Francisco, CA 94107. For more information, see&#32;<a href="/gold/about#postcard">http://www.reddit.com/gold/about#postcard</a>.</p>
+
+        <h3>Prizes</h3>
+        <p>We will describe giveaway dates, prizes and their approximate retail value&#32;<a href="#prize-details" onclick="$('#prize-details').toggle()">here</a>. Your odds of winning depend on the number of reddit gold members - for example, if there are 10,000 reddit gold members, the odds of winning any one prize would be 1 in 10,000. reddit may substitute prizes of equal or greater value if we believe it is necessary.</p>
+
+        <div id="prize-details">
+          <h3>Prize Details</h3>
+          <ul>
+            <li>Uniqlo: Once a week until further notice, $50 to $100 in clothing to one lucky winner.</li>
+            <li>redditgifts: Once a week until further notice, $20-30 in clothing to five lucky winners.</li>
+          </ul>
+        </div>
+
+        <h3>How to be Eligible for Giveaways</h3>
+        <p>In order to be eligible, you must be (1) a real person, (2) a registered member of reddit, (3) a legal resident of the United States, and (4) at least 18 years old at the time the prize is awarded. Only one entry is allowed per person per giveaway. Employees of reddit (or its partners) and their related family members are not eligible for giveaways. EACH GIVEAWAY IS VOID WHERE PROHIBITED OR RESTRICTED BY LAW and is subject to applicable federal, state and local laws and regulations.</p>
+
+        <h3>How We Select Prize Winners</h3>
+        <p>Winners will be randomly selected from all eligible reddit gold members. We'll contact you via your reddit mail account within 30 days if you have won. If you don't respond within 24 hours, or if you are not eligible to win a prize, or we cannot deliver the prize or prize notification to you, we may choose another winner. Winners may not substitute or transfer prizes. Winners are responsible for paying taxes on any prize, if applicable.</p>
+
+        <h3>Limitation of Liability</h3>
+        <p>reddit and our partners are not responsible for (1) your entries, (2) your use of any prize, (3) your participation in a giveaway, or (4) anything else outside of our reasonable control. reddit reserves the right to cancel or change any giveaway, prize, or entry if we believe the giveaway is not being properly conducted or any entries are fraudulent. If this happens, we will do our best to pick winners from all eligible, non-fraudulent entries. You hereby release reddit and its partners from all liability of any kind relating to any giveaway or any prize.</p>
+
+        <h3>Privacy and Legal</h3>
+        <p>To enter a giveaway, you may be required to give reddit and its partners certain information such as your name, physical address and redditgifts usernames. We will use this information in accordance with&#32;<a href="/help/privacypolicy">our Privacy Policy</a>. If one of our partners is awarding prizes, the giveaway will also be subject to their Privacy Policy and Terms of Use. All giveaways are governed by the laws of California and you agree that California courts will have jurisdiction over any disputes.</p>
+
+        <h3>Winners List</h3>
+        <p>After each giveaway ends, you can get a list of winners (including first name, last initial, city and state) by mailing a self-addressed stamped envelope with your request to reddit c/o Wired, 520 Third Street, San Francisco, CA 94107 within 90 days from when the giveaway ends.</p>
+      </div>
+    </section>
+    ${goldinfo_footer()}
+  </section>
+</%def>

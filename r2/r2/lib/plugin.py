@@ -16,13 +16,16 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
+import site
 import sys
 import os.path
 import pkg_resources
+from collections import OrderedDict
+
 from pylons import config
 
 
@@ -30,9 +33,16 @@ class Plugin(object):
     js = {}
     config = {}
     live_config = {}
+    needs_static_build = False
+    needs_translation = True
+    errors = {}
 
     def __init__(self, entry_point):
         self.entry_point = entry_point
+
+    @property
+    def name(self):
+        return self.entry_point.name
 
     @property
     def path(self):
@@ -40,15 +50,15 @@ class Plugin(object):
         return os.path.dirname(module.__file__)
 
     @property
-    def template_dirs(self):
+    def template_dir(self):
         """Add module/templates/ as a template directory."""
-        return [os.path.join(self.path, 'templates')]
+        return os.path.join(self.path, 'templates')
 
     @property
     def static_dir(self):
         return os.path.join(self.path, 'public')
 
-    def on_load(self):
+    def on_load(self, g):
         pass
 
     def add_js(self, module_registry=None):
@@ -62,6 +72,9 @@ class Plugin(object):
             else:
                 module_registry[name].extend(module)
 
+    def declare_queues(self, queues):
+        pass
+
     def add_routes(self, mc):
         pass
 
@@ -69,9 +82,16 @@ class Plugin(object):
         pass
 
 
+
 class PluginLoader(object):
     def __init__(self, plugin_names=None):
-        self.plugins = {}
+        # reloading site ensures that we have a fresh sys.path to build our
+        # working set off of. this means that forked worker processes won't get
+        # the sys.path that was current when the master process was spawned
+        # meaning that new plugins will be picked up on regular app reload
+        # rather than having to restart the master process as well.
+        reload(site)
+        self.working_set = pkg_resources.WorkingSet(sys.path)
 
         if plugin_names is None:
             entry_points = self.available_plugins()
@@ -87,8 +107,18 @@ class PluginLoader(object):
                 else:
                     entry_points.append(entry_point)
 
+        self.plugins = OrderedDict()
         for entry_point in entry_points:
-            plugin_cls = entry_point.load()
+            try:
+                plugin_cls = entry_point.load()
+            except Exception as e:
+                if plugin_names:
+                    # if this plugin was specifically requested, fail.
+                    raise e
+                else:
+                    print >> sys.stderr, ("Error loading plugin %s (%s)."
+                                          " Skipping." % (entry_point.name, e))
+                    continue
             self.plugins[entry_point.name] = plugin_cls(entry_point)
 
     def __len__(self):
@@ -97,21 +127,18 @@ class PluginLoader(object):
     def __iter__(self):
         return self.plugins.itervalues()
 
+    def __reversed__(self):
+        return reversed(self.plugins.values())
+
     def __getitem__(self, key):
         return self.plugins[key]
 
-    @staticmethod
-    def available_plugins(name=None):
-        return pkg_resources.iter_entry_points('r2.plugin', name)
+    def available_plugins(self, name=None):
+        return self.working_set.iter_entry_points('r2.plugin', name)
 
-    @staticmethod
-    def plugin_path(plugin):
-        if isinstance(plugin, str):
-            try:
-                plugin = pkg_resources.iter_entry_points("r2.plugin", name).next()
-            except StopIteration:
-                return None
-        return os.path.join(plugin.dist.location, plugin.module_name)
+    def declare_queues(self, queues):
+        for plugin in self:
+            plugin.declare_queues(queues)
 
     def load_plugins(self):
         g = config['pylons.g']
@@ -123,10 +150,15 @@ class PluginLoader(object):
 
             # Load plugin
             g.config.add_spec(plugin.config)
-            config['pylons.paths']['templates'].extend(plugin.template_dirs)
+            config['pylons.paths']['templates'].insert(0, plugin.template_dir)
             plugin.add_js()
-            plugin.on_load()
+            plugin.on_load(g)
 
     def load_controllers(self):
+        # this module relies on pylons.i18n._ at import time (for translating
+        # messages) which isn't available 'til we're in request context.
+        from r2.lib import errors
+
         for plugin in self:
+            errors.add_error_codes(plugin.errors)
             plugin.load_controllers()

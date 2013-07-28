@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -35,15 +35,16 @@
 %else:
   ${login_panel(login_form, 
                 user_reg = thing.user_reg, user_login = thing.user_login, 
-                dest=thing.dest)}
-  %if not g.disable_captcha:
+                dest=thing.dest,
+                registration_info=thing.registration_info)}
+  %if not thing.is_popup and not g.disable_captcha:
   <script type="text/javascript">
     $.request("new_captcha");
   </script>
   %endif
 %endif
 
-<%def name="login_form(register=False, user='', dest='', include_tos=True)">
+<%def name="login_form(register=False, user='', dest='')">
   <%
     op = "reg" if register else "login"
     base = g.https_endpoint if not c.cname else ''
@@ -62,11 +63,14 @@
     %endif
     <div>
       <ul>
-        <li>
+        <li class="name-entry">
           <label for="user_${op}">${_('username')}:</label>
           <input value="${user}" name="user" id="user_${op}" 
                  type="text" maxlength="20" tabindex="${tabindex}" autofocus />
           %if register:
+            <span class="throbber"></span>
+            <span class="notice-taken">${_('try another')}</span>
+            <span class="notice-available">${_('available!')}</span>
             ${error_field("BAD_USERNAME", "user", kind="span")}
             ${error_field("USERNAME_TAKEN", "user", kind="span")}
             ${error_field("USERNAME_TAKEN_DEL", "user", kind="span")}
@@ -75,10 +79,11 @@
       %if register:
         <li>
           <label for="email_${op}">
-            ${_('email')}: &nbsp;<i>(${_('optional')})
+            ${_('account recovery email')}: &nbsp;<i>(${_('optional')})
           </i></label>
           <input value="" name="email" id="email_${op}" 
-                 type="text" maxlength="50" tabindex="${tabindex}"/>
+                 type="email" maxlength="50" tabindex="${tabindex}"/>
+          <label for="email_${op}" class="note">${_('we only send email at your request')}</label>
           %if register:
             ${error_field("BAD_EMAILS", "email", kind="span")}
           %endif
@@ -136,12 +141,17 @@
 </%def>
 
 
-<%def name="login_panel(lf, user_reg = '', user_login = '', dest='')">
-  <div class="login-form-section divide">
+<%def name="login_panel(lf, user_reg = '', user_login = '', dest='', registration_info=None)">
+  <div class="login-form-section divide register">
     <h3>${_("create a new account")}</h3>
     <p class="tagline">
       ${_("all it takes is a username and password")}
     </p>
+    %if registration_info:
+      <div class="registration-info">
+        ${registration_info}
+      </div>
+    %endif
     ${lf(register=True, user=user_reg, dest=dest)}
     <p>
       <span class="orangered">
@@ -149,7 +159,7 @@
       </span>
     </p>
   </div>
-  <div class="login-form-section">
+  <div class="login-form-section login">
     <h3>${_("login")}</h3>
     <p class="tagline">
       ${_("already have an account and just want to login?")}

@@ -16,14 +16,14 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 from pylons import request, g
 from reddit_base import RedditController
 from r2.lib.pages import AdminPage, AdminErrorLog
-from validator import *
+from r2.lib.validator import validate, VAdmin
 
 class ErrorlogController(RedditController):
     @validate(VAdmin())

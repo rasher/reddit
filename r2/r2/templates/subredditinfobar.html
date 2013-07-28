@@ -16,17 +16,16 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%!
    from r2.lib.strings import strings, Score
-   from r2.lib.pages import WrappedUser, ModList
+   from r2.lib.pages import WrappedUser, ModList, SubscribeButton
  %>
 
 <%namespace file="utils.html" import="plain_link, thing_timestamp, text_with_links"/>
-<%namespace file="subreddit.html" import="addremove_button" />
 <%namespace file="printablebuttons.html" import="ynbutton, state_button" />
 
 <div class="titlebox">
@@ -34,7 +33,7 @@
     ${plain_link(thing.sr.name, thing.sr.path, _sr_path=False, _class="hover")}
   </h1>
 
-  ${addremove_button(thing.sr)}
+  ${SubscribeButton(thing.sr)}
   <span class="subscribers">${unsafe(Score.readers(thing.subscribers))}</span>
   <p class="users-online ${'fuzzed' if thing.accounts_active_fuzzed else ''}" title="${_('logged-in users viewing this subreddit in the past 15 minutes')}">
       ${unsafe(Score.users_here_now(thing.accounts_active, prepend='~' if thing.accounts_active_fuzzed else ''))}
@@ -56,7 +55,7 @@
                title=_('leave'),
                executed=_('you are no longer an approved submitter'),
                question=_('stop being an approved submitter?'),
-               format=_('you are an approved submitter on this reddit. (%(leave)s)'),
+               format=_('you are an approved submitter on this subreddit. (%(leave)s)'),
                format_arg='leave',
                hidden_data=dict(
                  id=thing.sr._fullname))}
@@ -82,7 +81,7 @@
 
   %if c.user_is_admin:
     %if thing.sr._spam:
-      ${state_button("approve", _("approve this reddit"),
+      ${state_button("approve", _("approve this subreddit"),
         "return change_state(this, 'approve');", _("approved"),
         hidden_data = dict(id = thing.sr._fullname))}
       %if thing.sr._spam and hasattr(thing.sr, "banner"):
@@ -90,7 +89,7 @@
       %endif
 
     %else:
-      ${state_button("remove", _("ban this reddit"),
+      ${state_button("remove", _("ban this subreddit"),
         "return change_state(this, 'remove');", _("banned"),
         hidden_data = dict(id = thing.sr._fullname))}
     %endif

@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -33,9 +33,13 @@
    else:
       url = permalink
    use_thumbs = thing.has_thumbnail and thing.thumbnail and not request.GET.has_key("nothumbs")
+   use_thumbs = use_thumbs and not thing.thumbnail_sprited
  %>
 <item>
   <title>${thing.title}</title>
+  %if thing.different_sr:
+    <category>${thing.subreddit.name}</category>
+  %endif
   <link>${url}</link>
   <guid isPermaLink="true">${permalink}</guid>
   <pubDate>${thing._date.strftime('%a, %d %b %Y %H:%M:%S %z')}</pubDate>

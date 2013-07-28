@@ -16,21 +16,21 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 from hashlib import md5
 
-from r2.config import cache
 from r2.lib.filters import _force_utf8
 from r2.lib.cache import NoneResult, make_key
 from r2.lib.lock import make_lock_factory
 from pylons import g
 
 make_lock = g.make_lock
+memoizecache = g.memoizecache
 
-def memoize(iden, time = 0, stale=False):
+def memoize(iden, time = 0, stale=False, timeout=30):
     def memoize_fn(fn):
         from r2.lib.memoize import NoneResult
         def new_fn(*a, **kw):
@@ -41,14 +41,16 @@ def memoize(iden, time = 0, stale=False):
 
             key = make_key(iden, *a, **kw)
 
-            res = None if update else cache.get(key, stale=stale)
+            res = None if update else memoizecache.get(key, stale=stale)
 
             if res is None:
                 # not cached, we should calculate it.
-                with make_lock("memoize", 'memoize_lock(%s)' % key):
+                with make_lock("memoize", 'memoize_lock(%s)' % key,
+                               time=timeout, timeout=timeout):
+
                     # see if it was completed while we were waiting
                     # for the lock
-                    stored = None if update else cache.get(key)
+                    stored = None if update else memoizecache.get(key)
                     if stored is not None:
                         # it was calculated while we were waiting
                         res = stored
@@ -57,13 +59,14 @@ def memoize(iden, time = 0, stale=False):
                         res = fn(*a, **kw)
                         if res is None:
                             res = NoneResult
-                        cache.set(key, res, time = time)
+                        memoizecache.set(key, res, time=time)
 
             if res == NoneResult:
                 res = None
 
             return res
 
+        new_fn.memoized_fn = fn
         return new_fn
     return memoize_fn
 

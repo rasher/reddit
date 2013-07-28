@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -24,10 +24,83 @@
     import re
     from r2.lib.filters import safemarkdown
     from r2.controllers.api_docs import section_info
+    from r2.models.token import OAuth2Scope
+    from r2.lib.db.thing import thing_types
 %>
 
 <%def name="api_method_id(uri, method)">${method}_${uri.replace('/', '_').strip('_')}</%def>
 <%def name="api_uri(uri)">${unsafe(re.sub(r'{(\w+)}', r'<em class="placeholder">\1</em>', uri))}</%def>
+
+<%def name="mode_selector(current_mode)">
+  <span class="mode-selector">
+    <a class="mode ${'mode-current' if current_mode == 'section' else ''}"
+       href="/dev/api">by section</a>
+    <a class="mode ${'mode-current' if current_mode == 'oauth' else ''}"
+       href="/dev/api/oauth">by oauth scope</a>
+  </span>
+</%def>
+
+<%def name="api_method_toc(api)">
+  <strong>API methods</strong>
+  ${mode_selector('section')}
+  <ul>
+  %for section in sorted(api):
+    <li>
+      <a href="#section_${section}" class="section">${section_info[section]['title']}</a>
+      <ul>
+        %for uri in sorted(api[section]):
+          <%
+             methods = sorted(api[section][uri].keys())
+             has_oauth = any(api[section][uri][method]['oauth_scopes']
+                             for method in methods)
+          %>
+          <li class="${'supports-oauth' if has_oauth else ''}">
+            <a href="#${api_method_id(uri, methods[0])}">${api_uri(uri)}</a>
+          </li>
+        %endfor
+      </ul>
+    </li>
+  %endfor
+  </ul>
+</%def>
+
+<%def name="oauth_toc(api, oauth_index)">
+  <strong>API methods</strong>
+  ${mode_selector('oauth')}
+  <ul>
+  %for scope, keys in sorted(oauth_index.iteritems()):
+    <li>
+      <a href="#scope_${scope}" class="section">${scope}</a>
+      <ul>
+        %for section, uri, method in sorted(keys):
+          <li>
+            <a href="#${api_method_id(uri, method)}">${api_uri(uri)}</a>
+          </li>
+        %endfor
+      </ul>
+    </li>
+  %endfor
+  </ul>
+</%def>
+
+<%def name="section_header(section)">
+  <h2 id="section_${section}">${section_info[section]['title']}</h2>
+  %if 'description' in section_info[section]:
+    <div class="description">
+      ${unsafe(safemarkdown(section_info[section]['description']))}
+    </div>
+  %endif
+</%def>
+
+<%def name="scope_header(scope)">
+  <h2 id="scope_${scope}">
+    ${OAuth2Scope.scope_info[scope]['name']}
+    <span class="scope-id">${scope}</span>
+  </h2>
+  <div class="description">
+    ${unsafe(safemarkdown(OAuth2Scope.scope_info[scope]['description']))}
+  </div>
+</%def>
 
 <%
   api = thing.api_docs
@@ -38,26 +111,11 @@
   <div class="toc">
     <ul>
       <li>
-        <strong>API methods</strong>
-        <ul>
-        %for section in sorted(api):
-          <li>
-          <a href="#section_${section}" class="section">${section_info[section]['title']}</a>
-            <ul>
-              %for uri in sorted(api[section]):
-                <%
-                   methods = sorted(api[section][uri].keys())
-                   has_oauth = any(api[section][uri][method]['oauth_scopes']
-                                   for method in methods)
-                %>
-                <li class="${'supports-oauth' if has_oauth else ''}">
-                  <a href="#${api_method_id(uri, methods[0])}">${api_uri(uri)}</a>
-                </li>
-              %endfor
-            </ul>
-          </li>
-        %endfor
-        </ul>
+        %if thing.mode == "oauth":
+          ${oauth_toc(thing.api_docs, thing.oauth_index)}
+        %else:
+          ${api_method_toc(thing.api_docs)}
+        %endif
       </li>
     </ul>
   </div>
@@ -71,13 +129,44 @@
     <p><strong>Please take care to respect our&#32;<a href="https://github.com/reddit/reddit/wiki/API">API access rules</a>.</strong></p>
   </div>
 
+  <div class="section overview">
+    <h2>overview</h2>
+
+    <h3 id="modhashes">modhashes</h3>
+
+    <p>A modhash is a token that the reddit API requires to help prevent&#32;<a
+      href="http://en.wikipedia.org/wiki/CSRF">CSRF</a>. Modhashes can be
+    obtained via the&#32;<a href="#GET_api_me.json">/api/me.json</a>&#32;call
+    or in the&#32;<code>Listing</code>&#32;structures of several other API
+    calls.</p>
+
+    <h3 id="fullnames">fullnames</h3>
+
+    <p>A fullname is a combination of a thing's type
+    (e.g.&#32;<code>Link</code>) and its unique ID which forms a compact
+    encoding of a globally unique ID on reddit.</p>
+
+    <p>Fullnames start with the type prefix for the object's type, followed by
+    the thing's unique ID in&#32;<a href="http://en.wikipedia.org/wiki/Base36">base
+      36</a>. For example,&#32;<code>t3_15bfi0</code>.</p>
+
+    <table class="parameters">
+      <caption>type prefixes</caption>
+      % for typeid in sorted(thing_types):
+      <tr>
+        <th scope="row">t${typeid}_</th>
+        <td>${thing_types[typeid].__name__}</td>
+      </tr>
+      % endfor
+    </table>
+  </div>
+
   <div class="section methods">
     %for section in sorted(api):
-      <h2 id="section_${section}">${section_info[section]['title']}</h2>
-      %if 'description' in section_info[section]:
-        <div class="description">
-          ${unsafe(safemarkdown(section_info[section]['description']))}
-        </div>
+      %if thing.mode == 'oauth':
+        ${scope_header(section)}
+      %else:
+        ${section_header(section)}
       %endif
       %for uri in sorted(api[section]):
         %for method in sorted(api[section][uri]):
@@ -130,17 +219,19 @@
                 %if params:
                   %for param in sorted(params):
                     <tr>
-                      <td class="name">${param}</td>
-                      <td class="desc">${params[param]}</td>
+                      <th scope="row">${param}</th>
+                      <td>${unsafe(safemarkdown(params[param], wrap=False))}</td>
                     </tr>
                   %endfor
                 %endif
                 %if base_params:
                   %for param in sorted(base_params):
-                    <tr class="base-param">
-                      <td class="name">${param}</td>
-                      <td class="desc">${base_params[param]}</td>
-                    </tr>
+                    %if param not in params:
+                      <tr class="base-param">
+                        <th scope="row">${param}</th>
+                        <td>${unsafe(safemarkdown(base_params[param], wrap=False))}</td>
+                      </tr>
+                    %endif
                   %endfor
                 %endif
                 </table>

@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -27,7 +27,7 @@ from r2.lib.db           import tdb_cassandra
 from r2.lib.memoize      import memoize
 from r2.lib.utils        import modhash, valid_hash, randstr, timefromnow
 from r2.lib.utils        import UrlParser
-from r2.lib.utils        import constant_time_compare
+from r2.lib.utils        import constant_time_compare, canonicalize_email
 from r2.lib.cache        import sgm
 from r2.lib import filters
 from r2.lib.log import log_text
@@ -89,6 +89,7 @@ class Account(Thing):
                      pref_show_sponsors = True, # sponsored links
                      pref_show_sponsorships = True,
                      pref_highlight_new_comments = True,
+                     pref_monitor_mentions=True,
                      mobile_compress = False,
                      mobile_thumbnail = True,
                      trusted_sponsor = False,
@@ -111,7 +112,17 @@ class Account(Thing):
                      gold_creddits = 0,
                      gold_creddit_escrow = 0,
                      otp_secret=None,
+                     state=0,
                      )
+
+    def __eq__(self, other):
+        if type(self) != type(other):
+            return False
+
+        return self._id == other._id
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
     def has_interacted_with(self, sr):
         if not sr:
@@ -172,19 +183,6 @@ class Account(Thing):
         karma = self.link_karma
         return max(karma, 1) if karma > -1000 else karma
 
-    def can_wiki(self):
-        if self.wiki_override is not None:
-            return self.wiki_override
-        else:
-            return (self.link_karma >= g.WIKI_KARMA and
-                    self.comment_karma >= g.WIKI_KARMA)
-
-    def jury_betatester(self):
-        if g.cache.get("jury-killswitch"):
-            return False
-        else:
-            return True
-
     def all_karmas(self):
         """returns a list of tuples in the form (name, hover-text, link_karma,
         comment_karma)"""
@@ -202,7 +200,7 @@ class Account(Thing):
                            self._t.get(sr_name + link_suffix, 0),
                            self._t.get(sr_name + comment_suffix, 0)))
 
-        karmas.sort(key = lambda x: abs(x[2] + x[3]), reverse=True)
+        karmas.sort(key = lambda x: x[2] + x[3], reverse=True)
 
         old_link_karma = self._t.get('link_karma', 0)
         old_comment_karma = self._t.get('comment_karma', 0)
@@ -353,6 +351,7 @@ class Account(Thing):
 
     def delete(self, delete_message=None):
         self.delete_message = delete_message
+        self.delete_time = datetime.now(g.tz)
         self._deleted = True
         self._commit()
 
@@ -383,6 +382,39 @@ class Account(Thing):
         from r2.models.token import OAuth2Client
         for client in OAuth2Client._by_developer(self):
             client.remove_developer(self)
+
+    # 'State' bitfield properties
+    @property
+    def _banned(self):
+        return self.state & 1
+
+    @_banned.setter
+    def _banned(self, value):
+        if value and not self._banned:
+            self.state |= 1
+            # Invalidate all cookies by changing the password
+            # First back up the password so we can reverse this
+            self.backup_password = self.password
+            # New PW doesn't matter, they can't log in with it anyway.
+            # Even if their PW /was/ 'banned' for some reason, this
+            # will change the salt and thus invalidate the cookies
+            change_password(self, 'banned') 
+
+            # deauthorize all access tokens
+            from r2.models.token import OAuth2AccessToken
+            from r2.models.token import OAuth2RefreshToken
+
+            OAuth2AccessToken.revoke_all_by_user(self)
+            OAuth2RefreshToken.revoke_all_by_user(self)
+        elif not value and self._banned:
+            self.state &= ~1
+
+            # Undo the password thing so they can log in
+            self.password = self.backup_password
+
+            # They're on their own for OAuth tokens, though.
+
+        self._commit()
 
     @property
     def subreddits(self):
@@ -506,23 +538,13 @@ class Account(Thing):
             canons_by_domain.setdefault(domain, [])
             canons_by_domain[domain].append(canon)
 
-        # Now, build a list of subdomains to check for ban status; for
-        # abc@foo.bar.com, we need to check foo.bar.com and bar.com
-        canons_by_subdomain = {}
-        for domain, canons in canons_by_domain.iteritems():
-            parts = domain.rstrip(".").split(".")
-            while len(parts) >= 2:
-                whole = ".".join(parts)
-                canons_by_subdomain.setdefault(whole, [])
-                canons_by_subdomain[whole].extend(canons)
-                parts.pop(0)
+        # Hand off to the domain ban system; it knows in the case of
+        # abc@foo.bar.com to check foo.bar.com, bar.com, and .com
+        from r2.models.admintools import bans_for_domain_parts
 
-        banned_subdomains = {}
-        sub_dict = g.hardcache.get_multi(canons_by_subdomain.keys(),
-                                         prefix="domain-")
-        for subdomain, d in sub_dict.iteritems():
-            if d and d.get("no_email", None):
-                for canon in canons_by_subdomain[subdomain]:
+        for domain, canons in canons_by_domain.iteritems():
+            for d in bans_for_domain_parts(domain):
+                if d.no_email:
                     rv[canon] = "domain"
 
         return rv
@@ -533,19 +555,7 @@ class Account(Thing):
         return which.get(canon, None)
 
     def canonical_email(self):
-        email = str(self.email.lower())
-        if email.count("@") != 1:
-            return "invalid@invalid.invalid"
-
-        localpart, domain = email.split("@")
-
-        # a.s.d.f+something@gmail.com --> asdf@gmail.com
-        localpart.replace(".", "")
-        plus = localpart.find("+")
-        if plus > 0:
-            localpart = localpart[:plus]
-
-        return localpart + "@" + domain
+        return canonicalize_email(self.email)
 
     def cromulent(self):
         """Return whether the user has validated their email address and
@@ -597,38 +607,35 @@ class Account(Thing):
             return None
 
     def flair_enabled_in_sr(self, sr_id):
-        return getattr(self, 'flair_%d_enabled' % sr_id, True)
+        return getattr(self, 'flair_%s_enabled' % sr_id, True)
 
     def update_sr_activity(self, sr):
         if not self._spam:
             AccountsActiveBySR.touch(self, sr)
 
+    def get_trophy_id(self, uid):
+        '''Return the ID of the Trophy associated with the given "uid"
+
+        `uid` - The unique identifier for the Trophy to look up
+
+        '''
+        return getattr(self, 'received_trophy_%s' % uid, None)
+
+    def set_trophy_id(self, uid, trophy_id):
+        '''Recored that a user has received a Trophy with "uid"
+
+        `uid` - The trophy "type" that the user should only have one of
+        `trophy_id` - The ID of the corresponding Trophy object
+
+        '''
+        return setattr(self, 'received_trophy_%s' % uid, trophy_id)
+
 class FakeAccount(Account):
     _nodb = True
     pref_no_profanity = True
 
-
-def valid_cookie(cookie):
-    try:
-        uid, timestr, hash = cookie.split(',')
-        uid = int(uid)
-    except:
-        return False
-
-    if g.read_only_mode:
-        return False
-
-    try:
-        account = Account._byID(uid, True)
-        if account._deleted:
-            return False
-    except NotFound:
-        return False
-
-    if constant_time_compare(cookie, account.make_cookie(timestr)):
-        return account
-    return False
-
+    def __eq__(self, other):
+        return self is other
 
 def valid_admin_cookie(cookie):
     if g.read_only_mode:
@@ -716,6 +723,8 @@ def valid_login(name, password):
         return False
 
     if not a._loaded: a._load()
+    if a._banned:
+        return False
     return valid_password(a, password)
 
 def valid_password(a, password):
@@ -772,7 +781,7 @@ def change_password(user, newpassword):
     return True
 
 #TODO reset the cache
-def register(name, password):
+def register(name, password, registration_ip):
     try:
         a = Account._by_name(name)
         raise AccountExists
@@ -781,6 +790,7 @@ def register(name, password):
                     password = bcrypt_password(password))
         # new accounts keep the profanity filter settings until opting out
         a.pref_no_profanity = True
+        a.registration_ip = registration_ip
         a._commit()
 
         #clear the caches
@@ -817,7 +827,7 @@ class DeletedUser(FakeAccount):
 class AccountsActiveBySR(tdb_cassandra.View):
     _use_db = True
     _connection_pool = 'main'
-    _ttl = 15*60
+    _ttl = timedelta(minutes=15)
 
     _extra_schema_creation_args = dict(key_validation_class=ASCII_TYPE)
 

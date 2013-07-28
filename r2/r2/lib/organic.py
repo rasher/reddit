@@ -16,12 +16,11 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 from r2.models import *
-from r2.lib.memoize import memoize
 from r2.lib.normalized_hot import get_hot
 from r2.lib import count
 from r2.lib.utils import UniqueIterator, timeago
@@ -31,14 +30,21 @@ from pylons import c
 import random
 from time import time
 
-organic_lifetime = 5*60
-organic_length   = 30
 organic_max_length= 50
 
 def keep_fresh_links(item):
-    return (c.user_is_loggedin and c.user._id == item.author_id) or item.fresh
+    if c.user_is_loggedin and c.user._id == item.author_id:
+        return True
 
-@memoize('cached_organic_links', time = organic_lifetime)
+    if item._spam or item._deleted:
+        return False
+
+    from r2.lib.promote import is_promo
+    if is_promo(item):
+        return (not item.over_18 or c.over18) and not item.hidden
+
+    return item.fresh
+
 def cached_organic_links(*sr_ids):
     sr_count = count.get_link_counts()
     #only use links from reddits that you're subscribed to
@@ -65,8 +71,6 @@ def cached_organic_links(*sr_ids):
     return link_names
 
 def organic_links(user):
-    from r2.controllers.reddit_base import organic_pos
-
     sr_ids = Subreddit.user_subreddits(user)
     # make sure that these are sorted so the cache keys are constant
     sr_ids.sort()
@@ -80,8 +84,3 @@ def organic_links(user):
     sr_ids.sort()
     return cached_organic_links(*sr_ids)[:organic_max_length]
 
-def update_pos(pos):
-    "Update the user's current position within the cached organic list."
-    from r2.controllers import reddit_base
-
-    reddit_base.set_organic_pos(pos)

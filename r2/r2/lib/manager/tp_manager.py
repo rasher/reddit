@@ -16,11 +16,11 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
-import pylons
+from pylons import g
 import hashlib
 from mako.template import Template as mTemplate
 from mako.exceptions import TemplateLookupException
@@ -31,9 +31,8 @@ from r2.lib.utils import Storage
 import inspect, re, os
 
 class tp_manager:
-    def __init__(self, engine = 'mako', template_cls = mTemplate):
+    def __init__(self, template_cls=mTemplate):
         self.templates = {}
-        self.engine = engine
         self.Template = template_cls
 
     def add(self, name, style, file = None):
@@ -70,8 +69,7 @@ class tp_manager:
                 break
             else:
                 try:
-                    _loader = pylons.buffet.engines[self.engine]['engine']
-                    template = _loader.load_template(template_or_name)
+                    template = g.mako_lookup.get_template(template_or_name)
                     if cache:
                         self.templates[key] = template
                         # also store a hash for the template

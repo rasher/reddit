@@ -16,14 +16,31 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 from pylons         import c, g
 from r2.lib.wrapped import Templated
 from pages   import Reddit
-from r2.lib.menus   import NamedButton, NavButton, menu, NavMenu
+from r2.lib.menus import (
+    NamedButton,
+    NavButton,
+    menu,
+    NavMenu,
+    OffsiteButton,
+)
+
+def admin_menu(**kwargs):
+    buttons = [
+        OffsiteButton("traffic", "/traffic"),
+        NavButton(menu.awards, "awards"),
+        NavButton(menu.errors, "error log"),
+    ]
+
+    admin_menu = NavMenu(buttons, title='admin tools', base_path='/admin',
+                         type="lightdrop", **kwargs)
+    return admin_menu
 
 class AdminSidebar(Templated):
     def __init__(self, user):
@@ -44,25 +61,6 @@ class AdminPage(Reddit):
     show_sidebar = False
 
     def __init__(self, nav_menus = None, *a, **kw):
-        #add admin options to the nav_menus
-        if c.user_is_admin:
-            buttons = []
-
-            if g.translator:
-                buttons.append(NavButton(menu.i18n, "i18n"))
-
-            buttons.append(NavButton(menu.awards, "ads"))
-            buttons.append(NavButton(menu.awards, "awards"))
-            buttons.append(NavButton(menu.errors, "error log"))
-            buttons.append(NavButton(menu.usage,  "usage stats"))
-
-            admin_menu = NavMenu(buttons, title='show', base_path = '/admin',
-                                 type="lightdrop")
-            if nav_menus:
-                nav_menus.insert(0, admin_menu)
-            else:
-                nav_menus = [admin_menu]
-
         Reddit.__init__(self, nav_menus = nav_menus, *a, **kw)
 
 class AdminProfileMenu(NavMenu):

@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 import os
@@ -27,12 +27,19 @@ from r2.lib import js
 
 print 'POTFILE := ' + os.path.join(I18N_PATH, 'r2.pot')
 
-plugins = list(PluginLoader.available_plugins())
-print 'PLUGINS := ' + ' '.join(plugin.name for plugin in plugins)
-for plugin in plugins:
-    print 'PLUGIN_PATH_%s := %s' % (plugin.name, PluginLoader.plugin_path(plugin))
+plugins = PluginLoader()
+print 'PLUGINS := ' + ' '.join(plugin.name for plugin in plugins
+                               if plugin.needs_static_build)
 
-js.load_plugin_modules()
+print 'PLUGIN_I18N_PATHS := ' + ','.join(os.path.relpath(plugin.path)
+                                         for plugin in plugins
+                                         if plugin.needs_translation)
+
+import sys
+for plugin in plugins:
+    print 'PLUGIN_PATH_%s := %s' % (plugin.name, plugin.path)
+
+js.load_plugin_modules(plugins)
 modules = dict((k, m) for k, m in js.module.iteritems())
 print 'JS_MODULES := ' + ' '.join(modules.iterkeys())
 outputs = []

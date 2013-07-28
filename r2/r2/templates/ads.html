@@ -16,36 +16,24 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%!
-   from r2.lib.template_helpers import get_domain, static
-   from r2.lib.tracking import AdframeInfo
-   import random
+   from r2.lib import tracking
  %>
 
-<%
-
-name = ''
-if c.custom_dart_keyword:
-    name = "r/%s/%s" % (c.site.name, c.custom_dart_keyword)
-elif not c.default_sr:
-    name = "r/%s/" % c.site.name
-
-%>
-
-<iframe id="ad-frame" frameborder="0" scrolling="no" name="ad-frame"
-        src="${g.ad_domain}/ads/${name}">
+<iframe id="${thing.frame_id}" frameborder="0" scrolling="no" name="${thing.frame_id}"
+        src="${thing.ad_url}">
 </iframe>
 
 <script type="text/javascript">
     <% 
-      tracker_url = AdframeInfo.gen_url(fullname = "adblock", ip = request.ip)
+      tracker_url = tracking.get_impression_pixel_url("adblock")
      %>
     $(function() {
-      var ad = $("#ad-frame");
+      var ad = $("#${thing.frame_id}");
       if(!ad.length || ad.height() == 0 || ad.width() == 0 || ad.offset().left == 0) {
         $(".footer").append("<img alt='' src='${unsafe(tracker_url)}&random=" +
                                     Math.random()*10000000000000000 + "'/>");

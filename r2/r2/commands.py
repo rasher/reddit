@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -28,6 +28,8 @@ from paste.deploy import appconfig
 from r2.config.environment import load_environment
 from paste.script.pluginlib import find_egg_info_dir
 from pylons.wsgiapp import PylonsApp
+
+from r2.config.middleware import RedditApp
 
 #from pylons.commands import ShellCommand, ControllerCommand, \
 #     RestControllerCommand
@@ -64,7 +66,8 @@ class RunCommand(command.Command):
 
         here_dir = os.getcwd()
 
-        if self.args[0].lower() == 'standalone':
+        is_standalone = self.args[0].lower() == 'standalone'
+        if is_standalone:
             load_environment(setup_globals=False)
         else:
             config_name = 'config:%s' % self.args[0]
@@ -81,7 +84,12 @@ class RunCommand(command.Command):
         sys.path.insert(0, here_dir)
 
         # Load the wsgi app first so that everything is initialized right
-        wsgiapp = RegistryManager(PylonsApp())
+        if not is_standalone:
+            wsgiapp = RegistryManager(RedditApp())
+        else:
+            # in standalone mode we don't have an ini so we can't use
+            # RedditApp since it imports all the fancy controllers.
+            wsgiapp = RegistryManager(PylonsApp())
         test_app = paste.fixture.TestApp(wsgiapp)
 
         # Query the test app to setup the environment

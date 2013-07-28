@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -24,9 +24,9 @@
 
 <div class="content over18" style="text-align: center">
   <p class="error">
-    ${_("you must be at least eighteen to view this reddit")}
+    ${_("you must be at least eighteen to view this subreddit")}
   </p>
-  <img src="${static('over18.png')}" alt="jedberg alien" />
+  <img src="${static('over18.png')}" alt="" height="254" width="180" />
   
   <form method="post" action="" class="pretty-form"
       ${"target='_top'" if c.cname else ""}>

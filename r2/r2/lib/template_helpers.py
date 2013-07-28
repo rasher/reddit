@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -24,26 +24,41 @@ from r2.models import *
 from filters import unsafe, websafe, _force_unicode, _force_utf8
 from r2.lib.utils import vote_hash, UrlParser, timesince, is_subdomain
 
+from r2.lib import hooks
+from r2.lib.static import static_mtime
 from r2.lib.media import s3_direct_url
+from r2.lib import js
 
 import babel.numbers
-from mako.filters import url_escape
 import simplejson
 import os.path
 from copy import copy
 import random
 import urlparse
 import calendar
-from pylons import g, c
+from pylons import g, c, request
 from pylons.i18n import _, ungettext
-from paste.util.mimeparse import desired_matches
 
-def is_encoding_acceptable(encoding_to_check):
-    "Check if a content encoding is acceptable to the user agent."
-    header = request.headers.get('Accept-Encoding', '')
-    return 'gzip' in desired_matches(['gzip'], header)
 
-def static(path, allow_gzip=True):
+def static_domain(kind, secure):
+    if kind == 'sr_stylesheet':
+        if secure:
+            return g.static_secure_sr_stylesheet_domain
+        else:
+            return g.static_sr_stylesheet_domain
+    else:
+        if secure:
+            return g.static_secure_domain
+        else:
+            return g.static_domain
+
+
+static_text_extensions = {
+    '.js': 'js',
+    '.css': 'css',
+    '.less': 'css'
+}
+def static(path, allow_gzip=True, kind='default'):
     """
     Simple static file maintainer which automatically paths and
     versions files being served out of static.
@@ -54,39 +69,36 @@ def static(path, allow_gzip=True):
     """
     dirname, filename = os.path.split(path)
     extension = os.path.splitext(filename)[1]
-    is_text = extension in ('.js', '.css')
-    can_gzip = is_text and is_encoding_acceptable('gzip')
+    is_text = extension in static_text_extensions
+    can_gzip = is_text and 'gzip' in request.accept_encoding
     should_gzip = allow_gzip and can_gzip
+    should_cache_bust = False
 
     path_components = []
     actual_filename = None
+    suffix = ''
 
-    if not c.secure and g.static_domain:
-        scheme = 'http'
-        domain = g.static_domain
-        query = None
-        suffix = '.gzip' if should_gzip and g.static_pre_gzipped else ''
-    elif c.secure and g.static_secure_domain:
-        scheme = 'https'
-        domain = g.static_secure_domain
-        query = None
-        suffix = '.gzip' if should_gzip and g.static_secure_pre_gzipped else ''
+    scheme = 'https' if c.secure else 'http'
+    domain = static_domain(kind, c.secure)
+    if domain:
+        if should_gzip:
+            if c.secure and g.static_secure_pre_gzipped:
+                suffix = '.gzip'
+            elif not c.secure and g.static_pre_gzipped:
+                suffix = '.gzip'
     else:
         path_components.append(c.site.static_path)
-        query = None
 
         if g.uncompressedJS:
-            query = 'v=' + str(random.randint(1, 1000000))
-
             # unminified static files are in type-specific subdirectories
             if not dirname and is_text:
-                path_components.append(extension[1:])
+                path_components.append(static_text_extensions[extension])
 
+            should_cache_bust = True
             actual_filename = filename
 
         scheme = None
         domain = None
-        suffix = ''
 
     path_components.append(dirname)
     if not actual_filename:
@@ -94,6 +106,12 @@ def static(path, allow_gzip=True):
     path_components.append(actual_filename + suffix)
 
     actual_path = os.path.join(*path_components)
+
+    query = None
+    if path and should_cache_bust:
+        file_id = static_mtime(actual_path) or random.randint(0, 1000000)
+        query = 'v=' + str(file_id)
+
     return urlparse.urlunsplit((
         scheme,
         domain,
@@ -112,7 +130,7 @@ def s3_https_if_secure(url):
          replace = "https://%s/" % s3_direct_url
     return url.replace("http://", replace)
 
-def js_config():
+def js_config(extra_config=None):
     config = {
         # is the user logged in?
         "logged": c.user_is_loggedin and c.user.name,
@@ -132,27 +150,51 @@ def js_config():
         "https_endpoint": is_subdomain(request.host, g.domain) and g.https_endpoint,
         # debugging?
         "debug": g.debug,
-        "vl": {},
-        "sr": {},
         "status_msg": {
           "fetching": _("fetching title..."),
           "submitting": _("submitting..."),
           "loading": _("loading...")
         },
         "is_fake": isinstance(c.site, FakeSubreddit),
-        "tracking_domain": g.tracking_domain,
+        "fetch_trackers_url": g.fetch_trackers_url,
         "adtracker_url": g.adtracker_url,
         "clicktracker_url": g.clicktracker_url,
         "uitracker_url": g.uitracker_url,
         "static_root": static(''),
+        "over_18": bool(c.over18),
     }
+
+    if extra_config:
+        config.update(extra_config)
+
+    hooks.get_hook("js_config").call(config=config)
+
     return config
 
-def generateurl(context, path, **kw):
-    if kw:
-        return path + '?' + '&'.join(["%s=%s"%(k, url_escape(v)) \
-                                      for k, v in kw.iteritems() if v])
-    return path
+
+class JSPreload(js.DataSource):
+    def __init__(self, data=None):
+        if data is None:
+            data = {}
+        js.DataSource.__init__(self, "r.preload.set({content})", data)
+
+    def set(self, url, data):
+        self.data[url] = data
+
+    def set_wrapped(self, url, wrapped):
+        from r2.lib.pages.things import wrap_things
+        if not isinstance(wrapped, Wrapped):
+            wrapped = wrap_things(wrapped)[0]
+        self.data[url] = wrapped.render_nocache('', style='api').finalize()
+
+    def use(self):
+        hooks.get_hook("js_preload.use").call(js_preload=self)
+
+        if self.data:
+            return js.DataSource.use(self)
+        else:
+            return ''
+
 
 def class_dict():
     t_cls = [Link, Comment, Message, Subreddit]
@@ -364,13 +406,13 @@ def add_sr(path, sr_path = True, nocname=False, force_hostname = False, retain_e
     parses the path and updates it to include the subreddit path
     according to the rules set by its arguments:
 
-     * force_hostname: if True, force the url's hotname to be updated
+     * force_hostname: if True, force the url's hostname to be updated
        even if it is already set in the path, and subject to the
        c.cname/nocname combination.  If false, the path will still
        have its domain updated if no hostname is specified in the url.
-    
+
      * nocname: when updating the hostname, overrides the value of
-       c.cname to set the hotname to g.domain.  The default behavior
+       c.cname to set the hostname to g.domain.  The default behavior
        is to set the hostname consistent with c.cname.
 
      * sr_path: if a cname is not used for the domain, updates the
@@ -380,7 +422,7 @@ def add_sr(path, sr_path = True, nocname=False, force_hostname = False, retain_e
       c.cname, c.render_style, c.site.name
     """
     # don't do anything if it is just an anchor
-    if path.startswith('#') or path.startswith('javascript:'):
+    if path.startswith(('#', 'javascript:')):
         return path
 
     u = UrlParser(path)
@@ -393,7 +435,7 @@ def add_sr(path, sr_path = True, nocname=False, force_hostname = False, retain_e
         else:
             u.hostname = get_domain(cname = (c.cname and not nocname),
                                     subreddit = False)
-    
+
     if c.secure:
         u.scheme = "https"
 
@@ -410,7 +452,7 @@ def join_urls(*urls):
     """joins a series of urls together without doubles slashes"""
     if not urls:
         return
-    
+
     url = urls[0]
     for u in urls[1:]:
         if not url.endswith('/'):
@@ -481,7 +523,7 @@ def add_attr(attrs, kind, label=None, link=None, cssclass=None, symbol=None):
         if not label:
             label = _('reddit admin, speaking officially')
         if not link:
-            link = '/help/faq#Whorunsreddit'
+            link = '/about/team'
     elif kind in ('X', '@'):
         priority = 5
         cssclass = 'gray'
@@ -513,7 +555,7 @@ def add_attr(attrs, kind, label=None, link=None, cssclass=None, symbol=None):
     attrs.append( (priority, symbol, cssclass, label, link, img) )
 
 
-def search_url(query, subreddit, restrict_sr="off", sort=None):
+def search_url(query, subreddit, restrict_sr="off", sort=None, recent=None):
     import urllib
     query = _force_utf8(query)
     url_query = {"q": query}
@@ -521,6 +563,8 @@ def search_url(query, subreddit, restrict_sr="off", sort=None):
         url_query["restrict_sr"] = restrict_sr
     if sort:
         url_query["sort"] = sort
+    if recent:
+        url_query["t"] = recent
     path = "/r/%s/search?" % subreddit if subreddit else "/search?"
     path += urllib.urlencode(url_query)
     return path

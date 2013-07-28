@@ -16,20 +16,18 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%!
    from r2.lib.strings import strings
-   from r2.lib.pages import UserText
+   from r2.lib.pages import SubredditSelector, UserText
    from r2.lib.template_helpers import add_sr
 %>
 
-<%namespace file="utils.html" import="error_field, submit_form, plain_link, reddit_selector"/>
+<%namespace file="utils.html" import="error_field, submit_form, plain_link"/>
 <%namespace name="utils" file="utils.html"/>
-
-Try our&#32;<a href="/iphonebookmarklet.compact?__javascript:location.href='http://${g.domain}/submit.compact?url='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title)">bookmarklet</a>.
 
 <%utils:submit_form onsubmit="return post_form(this, 'submit', linkstatus, null, true)" 
                     action=${add_sr("/submit")},
@@ -99,8 +97,8 @@ ${thing.formtabs_menu}
 %endif
 
 <div class="spacer">
-  <%utils:round_field title="${_('reddit')}" id="reddit-field">
-    ${reddit_selector(thing.default_sr, thing.sr_searches, thing.subreddits)}
+  <%utils:round_field title="${_('subreddit')}" id="reddit-field">
+    ${SubredditSelector(thing.default_sr, extra_subreddits=thing.extra_subreddits)}
   </%utils:round_field>
 </div>
 
@@ -109,7 +107,6 @@ ${thing.captcha}
 </div>
 <input name="resubmit" value="${thing.resubmit}" type="hidden"/>
 <div class="spacer">
-Try our&#32;<a href="/iphonebookmarklet.compact?__javascript:location.href='http://${g.domain}/submit.compact?url='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title)">bookmarklet</a>.
 <button class="btn save button" name="submit" value="form" type="submit">${_("submit")}</button>
   <span class="status"></span>
   ${error_field("RATELIMIT", "ratelimit")}

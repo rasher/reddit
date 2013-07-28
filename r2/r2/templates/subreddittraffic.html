@@ -16,12 +16,13 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%inherit file="reddittraffic.html"/>
 <%namespace file="reddittraffic.html" import="load_timeseries_js"/>
+<%namespace file="utils.html" import="_md"/>
 
 <%!
     from r2.lib.filters import safemarkdown
@@ -32,12 +33,24 @@
   % if c.user_is_sponsor:
   <div class="md">
   <ul>
-    <li><a href="/traffic/adverts/${c.site._fullname}">${_("300x100 traffic for this subreddit.")}</a></li>
-    <li><a href="/traffic/adverts/dart_${c.site.name}">${_("DART traffic for this subreddit.")}</a></li>
+    <li><a href="/traffic/adverts/dart_${c.site.name}">${_("all DART traffic for this subreddit.")}</a></li>
+    % if thing.codenames:
+    <li>
+      ${_("recent 300x100 campaigns in this subreddit:")}
+      <ul>
+      % for codename, campaign in thing.codenames:
+      <li><a href="/traffic/adverts/${codename}">${campaign}</a></li>
+      % endfor
+      </ul>
+    </li>
+    % else:
+    <li>${_("no recent 300x100 campaigns in this subreddit")}</li>
+    % endif
   </ul>
   </div>
   % else:
   ${unsafe(safemarkdown(strings.traffic_subreddit_explanation % dict(subreddit=thing.place)))}
+  <p>${_md("All times are in [UTC](http://en.wikipedia.org/wiki/UTC).", wrap=True)}</p>
   % endif
 
   ${load_timeseries_js()}

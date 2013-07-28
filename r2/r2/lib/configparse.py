@@ -16,12 +16,21 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
+import re
+
+from r2.lib.utils import timeinterval_fromstr
+
+
 class ConfigValue(object):
     _bool_map = dict(true=True, false=False)
+
+    @staticmethod
+    def str(v, key=None, data=None):
+        return str(v)
 
     @staticmethod
     def int(v, key=None, data=None):
@@ -45,6 +54,14 @@ class ConfigValue(object):
         return tuple(ConfigValue.to_iter(v))
 
     @staticmethod
+    def dict(key_type, value_type):
+        def parse(v, key=None, data=None):
+            return {key_type(x): value_type(y)
+                    for x, y in (
+                        i.split(':', 1) for i in ConfigValue.to_iter(v))}
+        return parse
+
+    @staticmethod
     def choice(v, key, data):
         if v not in data:
             raise ValueError("Unknown option for %r: %r not in %r" % (key, v, data))
@@ -53,6 +70,16 @@ class ConfigValue(object):
     @staticmethod
     def to_iter(v, delim = ','):
         return (x.strip() for x in v.split(delim) if x)
+
+    @staticmethod
+    def timeinterval(v, key=None, data=None):
+        return timeinterval_fromstr(v)
+
+    messages_re = re.compile(r'"([^"]+)"')
+    @staticmethod
+    def messages(v, key=None, data=None):
+        return ConfigValue.messages_re.findall(v.decode("string_escape"))
+
 
 class ConfigValueParser(dict):
     def __init__(self, raw_data):

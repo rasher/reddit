@@ -16,21 +16,18 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
-from validator import *
-from reddit_base import MinimalController
-
-from r2.lib.scraper import get_media_embed
-from r2.lib.pages import MediaEmbedBody, render_ad
-
-from pylons import request
+from pylons import request, g
 from pylons.controllers.util import abort
-from r2.lib.cache import make_key
 
-import random
+from r2.controllers.reddit_base import MinimalController
+from r2.lib.pages import MediaEmbedBody
+from r2.lib.scraper import get_media_embed
+from r2.lib.validator import validate, VLink
+
 
 class MediaembedController(MinimalController):
     @validate(link = VLink('link'))
@@ -54,23 +51,10 @@ class MediaembedController(MinimalController):
 
         return MediaEmbedBody(body = content).render()
 
+
 class AdController(MinimalController):
-    def request_key(self):
-        return make_key('request_key',
-                        c.lang,
-                        c.content_langs,
-                        request.host,
-                        c.cname,
-                        request.fullpath,
-                        random.choice(xrange(100)))
+    def try_pagecache(self):
+        pass
 
-    def GET_ad(self, reddit_name = None, keyword=None):
-        c.render_style = "html"
-        return render_ad(reddit_name=reddit_name, keyword=keyword)
-
-    def GET_ad_by_codename(self, codename = None):
-        if not codename:
-            abort(404)
-        c.render_style = "html"
-        return render_ad(codename=codename)
-
+    def GET_ad(self):
+        return "This is a placeholder ad."

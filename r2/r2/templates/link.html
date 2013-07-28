@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -25,7 +25,6 @@
    from r2.lib.template_helpers import s3_https_if_secure
    from r2.lib.pages.things import LinkButtons
    from r2.lib.pages import WrappedUser
-   from r2.lib.template_helpers import static
    from r2.lib.strings import Score, strings
 %>
  
@@ -42,9 +41,7 @@
 
 <%def name="make_link(name, css_class)">
   <a class="${css_class} ${ c.user_is_loggedin and 'loggedin' or ''} ${thing.clicked and 'click' or ''}"
-     %if not (getattr(thing, "trial_mode", None) and thing.is_self):
-       href="${thing.href_url}"
-     %endif
+     href="${thing.href_url}"
      %if thing.nofollow:
        rel="nofollow"
      %endif
@@ -80,7 +77,7 @@
 
 <%def name="flair()">
   %if c.user.pref_show_link_flair and thing.flair_text:
-    <span class="linkflairlabel">${thing.flair_text}</span>
+    <span class="linkflairlabel" title="${thing.flair_text}">${thing.flair_text}</span>
   %endif
 </%def>
 
@@ -95,13 +92,7 @@
     %if c.site.link_flair_position == 'right':
       <%call expr="flair()" />
     %endif
-    %if getattr(thing, "approval_checkmark", None):
-        <img class="approval-checkmark" title="${thing.approval_checkmark}"
-             src="${static('green-check.png')}"
-             onclick="alert('${thing.approval_checkmark}\n\n' +
-'${_("(no need to click for this info; just hover over the checkmark next time)")}')"
-           />
-    %endif
+    ${self.approval_checkmark()}
     &#32;
 
     ${self.domain()}
@@ -133,8 +124,7 @@
   %>
 
   ## if we're not on a permalink page we'll render the buttons on top
-  ## (unless it's also a jury duty listing)
-  %if not (expand or getattr(thing, "trial_mode", None)):
+  %if not expand:
     ${bottom_buttons()}
   %endif
 
@@ -180,9 +170,6 @@ ${parent.thing_data_attributes(what)} data-ups="${what.upvotes}" data-downs="${w
   ${plain_link(thing.subreddit.name, thing.subreddit_path, sr_path = False,
                cname = False, _class = "subreddit hover",
                target='_blank' if thing.newwindow else '')}
-  <script type="text/javascript">
-    reddit.sr['${thing._fullname}'] = '${thing.subreddit._fullname}';
-  </script>
 </%def>
 
 <%def name="midcol(display=True, cls = '')">
@@ -195,8 +182,6 @@ ${parent.thing_data_attributes(what)} data-ups="${what.upvotes}" data-downs="${w
     ${self.arrow(thing, 1, thing.likes)}
     %if thing.pref_compress:
       <div class="score-placeholder"></div>
-    %elif getattr(thing, "trial_mode", None):
-      <div class="score unvoted">&bull;</div> 
     %elif thing.hide_score:
       <div class="score likes">&bull;</div> 
       <div class="score unvoted">&bull;</div> 
@@ -242,7 +227,7 @@ ${parent.thing_data_attributes(what)} data-ups="${what.upvotes}" data-downs="${w
 </%def>
 
 <%def name="thumbnail()">
-  %if thing.thumbnail and not getattr(thing, "trial_mode", None):
+  %if thing.thumbnail:
   <%call expr="make_link('thumbnail', 'thumbnail ' + (thing.thumbnail if thing.thumbnail_sprited else ''))">
     % if not thing.thumbnail_sprited:
         <%

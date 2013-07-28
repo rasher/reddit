@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -28,4 +28,4 @@ from cmd_utils import *
 try:
     from r2admin.lib.admin_utils import *
 except ImportError:
-    from admin_utils import *
+    pass

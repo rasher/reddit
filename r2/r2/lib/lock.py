@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -24,9 +24,10 @@ from __future__ import with_statement
 from time import sleep
 from datetime import datetime
 from threading import local
-from traceback import format_stack
 import os
 import socket
+
+from r2.lib.utils import simple_traceback
 
 # thread-local storage for detection of recursive locks
 locks = local()
@@ -56,9 +57,15 @@ class MemcacheLock(object):
         self.verbose = verbose
 
     def __enter__(self):
+        self.acquire()
+
+    def __exit__(self, type, value, tb):
+        self.release()
+
+    def acquire(self):
         start = datetime.now()
 
-        my_info = (reddit_host, reddit_pid, ''.join(format_stack()))
+        my_info = (reddit_host, reddit_pid, simple_traceback(limit=7))
 
         #if this thread already has this lock, move on
         if self.key in self.locks:
@@ -92,7 +99,7 @@ class MemcacheLock(object):
         self.locks.add(self.key)
         self.have_lock = True
 
-    def __exit__(self, type, value, tb):
+    def release(self):
         #only release the lock if we gained it in the first place
         if self.have_lock:
             self.cache.delete(self.key)

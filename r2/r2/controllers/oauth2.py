@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -31,34 +31,24 @@ from r2.lib.base import abort
 from reddit_base import RedditController, MinimalController, require_https
 from r2.lib.db.thing import NotFound
 from r2.models import Account
-from r2.models.token import OAuth2Client, OAuth2AuthorizationCode, OAuth2AccessToken
-from r2.controllers.errors import ForbiddenError, errors
-from validator import validate, VRequired, VOneOf, VUser, VModhash, VOAuth2ClientID, VOAuth2Scope
+from r2.models.token import (
+    OAuth2Client, OAuth2AuthorizationCode, OAuth2AccessToken,
+    OAuth2RefreshToken, OAuth2Scope)
+from r2.lib.errors import ForbiddenError, errors
 from r2.lib.pages import OAuth2AuthorizationPage
 from r2.lib.require import RequirementException, require, require_split
-
-scope_info = {
-    "identity": {
-        "id": "identity",
-        "name": _("My Identity"),
-        "description": _("Access my reddit username and signup date."),
-    },
-    "comment": {
-        "id": "comment",
-        "name": _("Commenting"),
-        "description": _("Submit comments from my account."),
-    },
-    "moderateflair": {
-        "id": "moderateflair",
-        "name": _("Moderating Flair"),
-        "description": _("Manage flair in subreddits I moderate."),
-    },
-    "myreddits": {
-        "id": "myreddits",
-        "name": _("My Subscriptions"),
-        "description": _("Access my list of subreddits."),
-    },
-}
+from r2.lib.utils import parse_http_basic
+from r2.lib.validator import (
+    nop,
+    validate,
+    VRequired,
+    VOneOf,
+    VUser,
+    VModhash,
+    VOAuth2ClientID,
+    VOAuth2Scope,
+    VOAuth2RefreshToken,
+)
 
 class OAuth2FrontendController(RedditController):
     def pre(self):
@@ -94,8 +84,11 @@ class OAuth2FrontendController(RedditController):
               client = VOAuth2ClientID(),
               redirect_uri = VRequired("redirect_uri", errors.OAUTH2_INVALID_REDIRECT_URI),
               scope = VOAuth2Scope(),
-              state = VRequired("state", errors.NO_TEXT))
-    def GET_authorize(self, response_type, client, redirect_uri, scope, state):
+              state = VRequired("state", errors.NO_TEXT),
+              duration = VOneOf("duration", ("temporary", "permanent"),
+                                default="temporary"))
+    def GET_authorize(self, response_type, client, redirect_uri, scope, state,
+                      duration):
         """
         First step in [OAuth 2.0](http://oauth.net/2/) authentication.
         End users will be prompted for their credentials (username/password)
@@ -121,7 +114,8 @@ class OAuth2FrontendController(RedditController):
 
         if not c.errors:
             c.deny_frames = True
-            return OAuth2AuthorizationPage(client, redirect_uri, scope, state).render()
+            return OAuth2AuthorizationPage(client, redirect_uri, scope, state,
+                                           duration).render()
         else:
             return self._error_response(state, redirect_uri)
 
@@ -131,15 +125,19 @@ class OAuth2FrontendController(RedditController):
               redirect_uri = VRequired("redirect_uri", errors.OAUTH2_INVALID_REDIRECT_URI),
               scope = VOAuth2Scope(),
               state = VRequired("state", errors.NO_TEXT),
+              duration = VOneOf("duration", ("temporary", "permanent"),
+                                default="temporary"),
               authorize = VRequired("authorize", errors.OAUTH2_ACCESS_DENIED))
-    def POST_authorize(self, authorize, client, redirect_uri, scope, state):
+    def POST_authorize(self, authorize, client, redirect_uri, scope, state,
+                       duration):
         """Endpoint for OAuth2 authorization."""
 
         self._check_redirect_uri(client, redirect_uri)
 
         if not c.errors:
             code = OAuth2AuthorizationCode._new(client._id, redirect_uri,
-                                                c.user._id36, scope)
+                                                c.user._id36, scope,
+                                                duration == "permanent")
             resp = {"code": code._id, "state": state}
             return self.redirect(redirect_uri+"?"+urlencode(resp), code=302)
         else:
@@ -155,13 +153,7 @@ class OAuth2AccessController(MinimalController):
     def _get_client_auth(self):
         auth = request.headers.get("Authorization")
         try:
-            auth_scheme, auth_token = require_split(auth, 2)
-            require(auth_scheme.lower() == "basic")
-            try:
-                auth_data = base64.b64decode(auth_token)
-            except TypeError:
-                raise RequirementException
-            client_id, client_secret = require_split(auth_data, 2, ":")
+            client_id, client_secret = parse_http_basic(auth)
             client = OAuth2Client.get_token(client_id)
             require(client)
             require(client.secret == client_secret)
@@ -169,18 +161,23 @@ class OAuth2AccessController(MinimalController):
         except RequirementException:
             abort(401, headers=[("WWW-Authenticate", 'Basic realm="reddit"')])
 
-    @validate(grant_type = VOneOf("grant_type", ("authorization_code",)),
-              code = VRequired("code", errors.NO_TEXT),
-              redirect_uri = VRequired("redirect_uri", errors.OAUTH2_INVALID_REDIRECT_URI))
-    def POST_access_token(self, grant_type, code, redirect_uri):
+    @validate(grant_type = VOneOf("grant_type",
+                                  ("authorization_code", "refresh_token")),
+              code = nop("code"),
+              refresh_token = VOAuth2RefreshToken("refresh_token"),
+              redirect_uri = VRequired("redirect_uri",
+                                       errors.OAUTH2_INVALID_REDIRECT_URI))
+    def POST_access_token(self, grant_type, code, refresh_token, redirect_uri):
         """
         Exchange an [OAuth 2.0](http://oauth.net/2/) authorization code
-        (from [/api/v1/authorize](#api_method_authorize)) for an access token.
+        or refresh token (from [/api/v1/authorize](#api_method_authorize)) for
+        an access token.
 
         On success, returns a URL-encoded dictionary containing
         **access_token**, **token_type**, **expires_in**, and **scope**.
-        If there is a problem, an **error** parameter will be returned
-        instead.
+        If an authorization code for a permanent grant was given, a
+        **refresh_token** will be included. If there is a problem, an **error**
+        parameter will be returned instead.
 
         Must be called using SSL, and must contain a HTTP `Authorization:`
         header which contains the application's client identifier as the
@@ -188,20 +185,43 @@ class OAuth2AccessController(MinimalController):
         are visible on the [app preferences page](/prefs/apps).)
 
         Per the OAuth specification, **grant_type** must
-        be ``authorization_code`` and **redirect_uri** must exactly match the
-        value that was used in the call to
-        [/api/v1/authorize](#api_method_authorize).
+        be ``authorization_code`` for the initial access token or
+        ``refresh_token`` for renewing the access token. In either case,
+        **redirect_uri** must exactly match the value that was used in the call
+        to [/api/v1/authorize](#api_method_authorize) that created this grant.
         """
 
         resp = {}
+        if not (code or refresh_token):
+            c.errors.add("NO_TEXT", field=("code", "refresh_token"))
         if not c.errors:
-            auth_token = OAuth2AuthorizationCode.use_token(code, c.oauth2_client._id, redirect_uri)
-            if auth_token:
-                access_token = OAuth2AccessToken._new(auth_token.client_id, auth_token.user_id, auth_token.scope)
+            access_token = None
+
+            if grant_type == "authorization_code":
+                auth_token = OAuth2AuthorizationCode.use_token(
+                    code, c.oauth2_client._id, redirect_uri)
+                if auth_token:
+                    if auth_token.refreshable:
+                        refresh_token = OAuth2RefreshToken._new(
+                            auth_token.client_id, auth_token.user_id,
+                            auth_token.scope)
+                    access_token = OAuth2AccessToken._new(
+                        auth_token.client_id, auth_token.user_id,
+                        auth_token.scope,
+                        refresh_token._id if refresh_token else None)
+            elif grant_type == "refresh_token" and refresh_token:
+                access_token = OAuth2AccessToken._new(
+                    refresh_token.client_id, refresh_token.user_id,
+                    refresh_token.scope,
+                    refresh_token=refresh_token._id)
+
+            if access_token:
                 resp["access_token"] = access_token._id
                 resp["token_type"] = access_token.token_type
-                resp["expires_in"] = access_token._ttl
-                resp["scope"] = auth_token.scope
+                resp["expires_in"] = int(access_token._ttl) if access_token._ttl else None
+                resp["scope"] = access_token.scope
+                if refresh_token:
+                    resp["refresh_token"] = refresh_token._id
             else:
                 resp["error"] = "invalid_grant"
         else:
@@ -236,9 +256,11 @@ class OAuth2ResourceController(MinimalController):
         if handler:
             oauth2_perms = getattr(handler, "oauth2_perms", None)
             if oauth2_perms:
-                granted_scopes = set(access_token.scope_list)
+                grant = OAuth2Scope(access_token.scope)
+                if grant.subreddit_only and c.site.name not in grant.subreddits:
+                    self._auth_error(403, "insufficient_scope")
                 required_scopes = set(oauth2_perms['allowed_scopes'])
-                if not (granted_scopes >= required_scopes):
+                if not (grant.scopes >= required_scopes):
                     self._auth_error(403, "insufficient_scope")
             else:
                 self._auth_error(400, "invalid_request")

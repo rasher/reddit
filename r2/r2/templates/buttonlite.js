@@ -16,20 +16,21 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%!
-   from r2.lib.template_helpers import static
+   from r2.lib.template_helpers import static, get_domain
+   from r2.lib.utils import query_string
    from r2.lib.strings import Score
  %>
 
-<%namespace file="buttontypes.html" import="submiturl" />
+<%def name="submiturl(url, title='')">${("http://%s/submit" % get_domain(cname = c.cname, subreddit = not c.cname)) + query_string(dict(url=url, title=title))}</%def>
 
 <% 
     if thing._fullname:
-        path = thing.make_permalink_slow()
+        path = thing.make_permalink_slow(force_domain=True)
     else:
         path = capture(submiturl, thing.url, thing.title)
 %>

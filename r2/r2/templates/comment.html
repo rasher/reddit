@@ -16,12 +16,12 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%!
-   from r2.lib.filters import edit_comment_filter, unsafe
+   from r2.lib.filters import unsafe
    from r2.lib.pages.things import CommentButtons
    from r2.lib.pages import WrappedUser
 %>
@@ -34,7 +34,11 @@
 ##################
 
 <%def name="thing_data_attributes(what)" buffered="True">
-${parent.thing_data_attributes(what)} data-ups="${what.upvotes}" data-downs="${what.downvotes}"
+  %if what.score_hidden:
+    ${parent.thing_data_attributes(what)} data-ups="0" data-downs="0"
+  %else:
+    ${parent.thing_data_attributes(what)} data-ups="${what.upvotes}" data-downs="${what.downvotes}"
+  %endif
 </%def>
 
 <%def name="midcol(display=True, cls = '')">
@@ -106,11 +110,26 @@ ${parent.collapsed()}
     ${thing.collapsed_reason}
   %else:
     %if show:
-       ${unsafe(self.score(thing, likes = thing.likes))}&#32;
+      %if thing.score_hidden:
+        <span title="${_('this subreddit hides comment scores for %d minutes') % thing.subreddit.comment_score_hide_mins}">
+          [${_("score hidden")}]
+        </span>&#32;
+      %else:
+        ${unsafe(self.score(thing, likes = thing.likes))}&#32;
+      %endif
     %endif
     ${thing_timestamp(thing, thing.timesince)}&#32;${_("ago")}
     ${edited(thing, thing.lastedited)}
   %endif
+
+  % if thing.gilded_message:
+  <span class="gilded-comment-icon" title="${thing.gilded_message}" data-count="${thing.gildings}">
+    % if thing.gildings > 1:
+      x${thing.gildings}
+    % endif
+  </span>
+  % endif
+
   %if collapse:
     &nbsp;<a href="#" class="expand"
        onclick="return showcomment(this)">
@@ -118,10 +137,21 @@ ${parent.collapsed()}
         ${ungettext("child", "children", thing.num_children)})
     </a>
   %endif
+  ${self.approval_checkmark()}
 </%def>
 
 <%def name="Child()">
-${parent.Child(not thing.collapsed)}
+%if thing.link.contest_mode and hasattr(thing, "child") and not thing.parent_id:
+  <a href="#" class="showreplies"
+     onclick="$(this).hide();$(this).parent().find('.noncollapsed').show();return false;">
+    [${_("show replies")}]
+  </a>
+  <div class="child noncollapsed" style="display:none">
+%else:
+  <div class="child" ${thing.collapsed and "style='display:none'" or ""}>
+%endif
+    ${thing.childlisting}
+  </div>
 </%def>
 
 <%def name="commentBody()">

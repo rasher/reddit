@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -29,8 +29,8 @@ from r2.lib.filters import spaceCompress, safemarkdown
 from r2.lib.memoize import memoize
 from r2.lib.template_helpers import add_sr
 from r2.lib import utils
-from validator import *
-from pylons import c, Response
+from r2.lib.validator import *
+from pylons import c
 from r2.models.admintools import is_shamed_domain
 
 import string
@@ -95,16 +95,21 @@ class ToolbarController(RedditController):
 
     @validate(link = VLink('id'))
     def GET_tb(self, link):
+        '''/tb/$id36, show a given link with the toolbar
+        If the user doesn't have the toolbar enabled, redirect to comments
+        page.
+        
+        '''
         from r2.lib.media import thumbnail_url
-
-        "/tb/$id36, show a given link with the toolbar"
         if not link:
             return self.abort404()
         elif link.is_self:
             return self.redirect(link.url)
+        elif not (c.user_is_loggedin and c.user.pref_frame):
+            return self.redirect(link.make_permalink_slow(force_domain=True))
         
         # if the domain is shame-banned, bail out.
-        if is_shamed_domain(link.url, request.ip)[0]:
+        if is_shamed_domain(link.url)[0]:
             self.abort404()
         
         if not link.subreddit_slow.can_view(c.user):
@@ -132,7 +137,7 @@ class ToolbarController(RedditController):
             self.abort404()
 
         # if the domain is shame-banned, bail out.
-        if is_shamed_domain(path, request.ip)[0]:
+        if is_shamed_domain(path)[0]:
             self.abort404()
 
         link = utils.link_from_url(path, multiple = False)
@@ -169,11 +174,8 @@ class ToolbarController(RedditController):
 
         # we don't want clients to think that this URL is actually a
         # valid URL for search-indexing or the like
-        c.response = Response()
-        c.response.status_code = 404
         request.environ['usable_error_content'] = spaceCompress(res.render())
-
-        return c.response
+        abort(404)
 
     @validate(link = VLink('id'))
     def GET_comments(self, link):

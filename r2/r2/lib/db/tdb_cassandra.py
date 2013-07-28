@@ -16,10 +16,11 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
+import json
 import inspect
 import pytz
 from datetime import datetime
@@ -33,13 +34,14 @@ from pycassa.cassandra.ttypes import ConsistencyLevel, NotFoundException
 from pycassa.system_manager import (SystemManager, UTF8_TYPE,
                                     COUNTER_COLUMN_TYPE, TIME_UUID_TYPE,
                                     ASCII_TYPE)
-from pycassa.types import DateType
+from pycassa.types import DateType, LongType, IntegerType
 from r2.lib.utils import tup, Storage
 from r2.lib import cache
 from uuid import uuid1, UUID
 from itertools import chain
 import cPickle as pickle
 from pycassa.util import OrderedDict
+import base64
 
 connection_pools = g.cassandra_pools
 default_connection_pool = g.cassandra_default_pool
@@ -69,7 +71,7 @@ CL = Storage(ANY    = ConsistencyLevel.ANY,
 # wire for a given row (this should be increased if we start working
 # with classes with lots of columns, like Account which has lots of
 # karma_ rows, or we should not do that)
-max_column_count = 50000
+max_column_count = 10000
 
 # the pycassa date serializer, for use when we can't set the right metadata
 # to get pycassa to serialize dates for us
@@ -114,6 +116,9 @@ def get_manager(seeds):
 class ThingMeta(type):
     def __init__(cls, name, bases, dct):
         type.__init__(cls, name, bases, dct)
+
+        if hasattr(cls, '_ttl') and hasattr(cls._ttl, 'total_seconds'):
+            cls._ttl = cls._ttl.total_seconds()
 
         if cls._use_db:
             if cls._type_prefix is None:
@@ -210,7 +215,7 @@ class Counter(object):
 
 
 class ThingBase(object):
-    # base class for Thing and Relation
+    # base class for Thing
 
     __metaclass__ = ThingMeta
 
@@ -279,6 +284,13 @@ class ThingBase(object):
     # a per-instance property that specifies that the columns backing
     # these attributes are to be removed on _commit()
     _deletes = set()
+
+    # thrift will materialize the entire result set for a slice range
+    # in memory, meaning that we need to limit the maximum number of columns
+    # we receive in a single get to avoid hurting the server. if this
+    # value is true, we will make sure to do extra gets to retrieve all of
+    # the columns in a row when there are more than the per-call maximum.
+    _fetch_all_columns = False
 
     def __init__(self, _id = None, _committed = False, _partial = None, **kw):
         # things that have changed
@@ -350,13 +362,20 @@ class ThingBase(object):
                 still_need.add(k)
 
         def lookup(l_ids):
-            # TODO: if we get back max_column_count columns for a
-            # given row, check a flag on the class as to whether to
-            # refetch for more of them. This could be important with
-            # large Views, for instance
-
             if properties is None:
                 rows = cls._cf.multiget(l_ids, column_count=max_column_count)
+
+                # if we got max_column_count columns back for a row, it was
+                # probably clipped. in this case, we should fetch the remaining
+                # columns for that row and add them to the result.
+                if cls._fetch_all_columns:
+                    for key, row in rows.iteritems():
+                        if len(row) == max_column_count:
+                            last_column_seen = next(reversed(row))
+                            cols = cls._cf.xget(key,
+                                                column_start=last_column_seen,
+                                                buffer_size=max_column_count)
+                            row.update(cols)
             else:
                 rows = cls._cf.multiget(l_ids, columns = willask_properties)
 
@@ -469,7 +488,7 @@ class ThingBase(object):
             return val
 
         # otherwise we'll assume that it's a utf-8 string
-        return val.decode('utf-8')
+        return val if isinstance(val, unicode) else val.decode('utf-8')
 
     @classmethod
     def _serialize_column(cls, attr, val):
@@ -522,8 +541,6 @@ class ThingBase(object):
     def _from_columns(cls, t_id, columns):
         """Given a dictionary of freshly deserialized columns
            construct an instance of cls"""
-        # if modifying this, check Relation._from_columns and see if
-        # you should change it as well
         t = cls()
         t._orig = columns
         t._id = t_id
@@ -613,6 +630,8 @@ class ThingBase(object):
 
         if not self._committed:
             self._on_create()
+        else:
+            self._on_commit()
 
         self._committed = True
 
@@ -626,8 +645,14 @@ class ThingBase(object):
         self._deletes.clear()
         self._column_ttls.clear()
 
+    def _destroy(self):
+        self._cf.remove(self._id,
+                        write_consistency_level=self._write_consistency_level)
+
     def __getattr__(self, attr):
-        if attr.startswith('_'):
+        if isinstance(attr, basestring) and attr.startswith('_'):
+            # TODO: I bet this interferes with Views whose column names can
+            # start with a _
             try:
                 return self.__dict__[attr]
             except KeyError:
@@ -650,7 +675,9 @@ class ThingBase(object):
         if attr == '_id' and self._committed:
             raise ValueError('cannot change _id on a committed %r' % (self.__class__))
 
-        if attr.startswith('_'):
+        if isinstance(attr, basestring) and attr.startswith('_'):
+            # TODO: I bet this interferes with Views whose column names can
+            # start with a _
             return object.__setattr__(self, attr, val)
 
         try:
@@ -728,6 +755,10 @@ class ThingBase(object):
            well"""
         pass
 
+    def _on_commit(self):
+        """Executed on _commit other than creation."""
+        pass
+
     @classmethod
     def _all(cls):
         # returns a query object yielding every single item in a
@@ -749,20 +780,24 @@ class ThingBase(object):
                               comm_str, part_str)
 
     if debug:
-        # we only want this with g.debug because overriding __del__
-        # can play hell with memory leaks
+        # we only want this with g.debug because overriding __del__ can play
+        # hell with memory leaks
         def __del__(self):
-                if not self._committed:
-                    # normally we'd log this with g.log or something,
-                    # but we can't guarantee that the thread
-                    # destructing us has access to g
-                    print "Warning: discarding uncomitted %r; this is usually a bug" % (self,)
-                elif self._dirty:
-                    print ("Warning: discarding dirty %r; this is usually a bug (_dirties=%r, _deletes=%r)"
-                           % (self,self._dirties,self._deletes))
+            if not self._committed:
+                # normally we'd log this with g.log or something, but we can't
+                # guarantee that the thread destructing us has access to g
+                print "Warning: discarding uncomitted %r; this is usually a bug" % (self,)
+            elif self._dirty:
+                print ("Warning: discarding dirty %r; this is usually a bug (_dirties=%r, _deletes=%r)"
+                       % (self,self._dirties,self._deletes))
 
 class Thing(ThingBase):
     _timestamp_prop = 'date'
+
+    # alias _date property for consistency with tdb_sql things.
+    @property
+    def _date(self):
+        return self.date
 
 class UuidThing(ThingBase):
     _timestamp_prop = 'date'
@@ -792,159 +827,19 @@ class UuidThing(ThingBase):
     def _cache_key_id(cls, t_id):
         return cls._cache_prefix() + str(t_id)
 
-class Relation(ThingBase):
-    _timestamp_prop = 'date'
-
-    def __init__(self, thing1_id, thing2_id, **kw):
-        # NB! When storing relations between postgres-backed Thing
-        # objects, these IDs are actually ID36s
-        ThingBase.__init__(self,
-                           _id = self._rowkey(thing1_id, thing2_id),
-                           **kw)
-        self._orig['thing1_id'] = thing1_id
-        self._orig['thing2_id'] = thing2_id
-
-    @will_write
-    def _destroy(self, write_consistency_level = None):
-        # only implemented on relations right now, but at present
-        # there's no technical reason for this
-        self._cf.remove(self._id,
-                        write_consistency_level = self._wcl(write_consistency_level))
-        self._on_destroy()
-        thing_cache.delete(self._cache_key())
-
-    def _on_destroy(self):
-        """Called *after* the destruction of the Thing on the
-           destroyed Thing's mortal shell"""
-        # only implemented on relations right now, but at present
-        # there's no technical reason for this
-        pass
-
-    @classmethod
-    def _fast_query(cls, thing1s, thing2s, properties = None, **kw):
-        """Find all of the relations of this class between all of the
-           members of thing1_ids and thing2_ids"""
-        thing1s, thing1s_is_single = tup(thing1s, True)
-        thing2s, thing2s_is_single = tup(thing2s, True)
-
-        if not thing1s or not thing2s:
-            return {}
-
-        # grab the last time each thing1 modified this relation class so we can
-        # know which relations not to even bother looking up
-        if thing1s:
-            from r2.models.last_modified import LastModified
-            fullnames = [cls._thing1_cls._fullname_from_id36(thing1._id36)
-                         for thing1 in thing1s]
-            timestamps = LastModified.get_multi(fullnames,
-                                                cls._cf.column_family)
-
-        # build up a list of ids to look up, throwing out the ones that the
-        # timestamp fetched above indicates are pointless
-        ids = set()
-        thing1_ids, thing2_ids = {}, {}
-        for thing1 in thing1s:
-            last_modification = timestamps.get(thing1._fullname)
-
-            if not last_modification:
-                continue
-
-            for thing2 in thing2s:
-                key = cls._rowkey(thing1._id36, thing2._id36)
-
-                if key in ids:
-                    continue
-
-                if thing2._date > last_modification:
-                    continue
-
-                ids.add(key)
-                thing2_ids[thing2._id36] = thing2
-            thing1_ids[thing1._id36] = thing1
-
-        # all relations must load these properties, even if unrequested
-        if properties is not None:
-            properties = set(properties)
-
-            properties.add('thing1_id')
-            properties.add('thing2_id')
-
-        rels = {}
-        if ids:
-            rels = cls._byID(ids, properties=properties).values()
-
-        if thing1s_is_single and thing2s_is_single:
-            if rels:
-                assert len(rels) == 1
-                return rels[0]
-            else:
-                raise NotFound("<%s %r>" % (cls.__name__,
-                                            cls._rowkey(thing1s[0]._id36,
-                                                        thing2s[0]._id36)))
-
-        return dict(((thing1_ids[rel.thing1_id], thing2_ids[rel.thing2_id]), rel)
-                    for rel in rels)
-
-    @classmethod
-    def _from_columns(cls, t_id, columns):
-        # we deserialize relations a little specially so that we can
-        # throw our toys on the floor if they don't have thing1_id and
-        # thing2_id
-        if not ('thing1_id' in columns and 'thing2_id' in columns
-                and t_id == cls._rowkey(columns['thing1_id'], columns['thing2_id'])):
-            raise InvariantException("Looked up %r with unmatched IDs (%r)"
-                                     % (cls, t_id))
-
-        # if modifying this, check ThingBase._from_columns and see if
-        # you should change it as well
-        thing1_id, thing2_id = columns['thing1_id'], columns['thing2_id']
-        t = cls(thing1_id = thing1_id, thing2_id = thing2_id)
-        assert t._id == t_id
-        t._orig = columns
-        t._committed = True
-        return t
-
-    @staticmethod
-    def _rowkey(thing1_id36, thing2_id36):
-        assert isinstance(thing1_id36, basestring) and isinstance(thing2_id36, basestring)
-        return '%s_%s' % (thing1_id36, thing2_id36)
-
-    def _commit(self, *a, **kw):
-        assert self._id == self._rowkey(self.thing1_id, self.thing2_id)
-
-        retval = ThingBase._commit(self, *a, **kw)
-
-        from r2.models.last_modified import LastModified
-        fullname = self._thing1_cls._fullname_from_id36(self.thing1_id)
-        LastModified.touch(fullname, self._cf.column_family)
-
-        return retval
-
-    @classmethod
-    def _rel(cls, thing1_cls, thing2_cls):
-        # should be implemented by abstract relations, like Vote
-        raise NotImplementedError
-
-    @classmethod
-    def _datekey(cls, date):
-        # ick
-        return str(long(cls._serialize_date(date)))
-
 
 def view_of(cls):
-    """Register a class as a view of a DenormalizedRelation.
+    """Register a class as a view of a Thing.
 
-    Views are expected to implement two methods:
-
-        create - called on relationship creation. takes a thing1, a list
-                 of thing2s and opaque, extra data passed from above.
-
-        delete - called on relationship destruction. takes a thing1, a list
-                 of things2 and opaque.
+    When a Thing is created or destroyed the appropriate View method must be
+    called to update the View. This can be done using Thing._on_create() for
+    general Thing classes or create()/destroy() for DenormalizedRelation
+    classes.
 
     """
     def view_of_decorator(view_cls):
         cls._views.append(view_cls)
+        view_cls._view_of = cls
         return view_cls
     return view_of_decorator
 
@@ -969,6 +864,8 @@ class DenormalizedRelation(object):
     _cf_name = None
     _compare_with = ASCII_TYPE
     _type_prefix = None
+    _last_modified_name = None
+    _write_last_modified = True
     _extra_schema_creation_args = dict(key_validation_class=ASCII_TYPE,
                                        default_validation_class=UTF8_TYPE)
 
@@ -996,6 +893,10 @@ class DenormalizedRelation(object):
         for view in cls._views:
             view.create(thing1, thing2s, opaque)
 
+        if cls._write_last_modified:
+            from r2.models.last_modified import LastModified
+            LastModified.touch(thing1._fullname, cls._last_modified_name)
+
     @classmethod
     def destroy(cls, thing1, thing2s):
         """Destroy relationships between thing1 and some thing2s."""
@@ -1010,7 +911,22 @@ class DenormalizedRelation(object):
         """Find relationships between thing1 and various thing2s."""
         thing2s, thing2s_is_single = tup(thing2s, ret_is_single=True)
 
-        if not thing1 or not thing2s:
+        if not thing1:
+            return {}
+
+        # don't bother looking up relationships for items that were created
+        # since the last time the thing1 created a relationship of this type
+        if cls._last_modified_name:
+            from r2.models.last_modified import LastModified
+            timestamp = LastModified.get(thing1._fullname,
+                                         cls._last_modified_name)
+            if timestamp:
+                thing2s = [thing2 for thing2 in thing2s
+                           if thing2._date <= timestamp]
+            else:
+                thing2s = []
+
+        if not thing2s:
             return {}
 
         # fetch the row from cassandra. if it doesn't exist, thing1 has no
@@ -1030,7 +946,7 @@ class DenormalizedRelation(object):
         else:
             if results:
                 assert len(results) == 1
-                return results[0]
+                return results.values()[0]
             else:
                 raise NotFound("<%s %r>" % (cls.__name__, (thing1._id36,
                                                            thing2._id36)))
@@ -1042,8 +958,8 @@ class ColumnQuery(object):
     """
     _chunk_size = 100
 
-    def __init__(self, cls, rowkeys, column_start="", column_finish="", 
-                 column_count=100, column_reversed=True, 
+    def __init__(self, cls, rowkeys, column_start="", column_finish="",
+                 column_count=100, column_reversed=True,
                  column_to_obj=None,
                  obj_to_column=None):
         self.cls = cls
@@ -1072,10 +988,10 @@ class ColumnQuery(object):
     @staticmethod
     def default_column_to_obj(columns):
         """
-        Mapping from column --> object. 
-        
-        This default doesn't actually return the underlying object but we don't 
-        know how to do that without more information. 
+        Mapping from column --> object.
+
+        This default doesn't actually return the underlying object but we don't
+        know how to do that without more information.
         """
         return columns
 
@@ -1168,7 +1084,7 @@ class ColumnQuery(object):
                 yield r
 
     def __repr__(self):
-        return "<%s(%s-%r)>" % (self.__class__.__name__, self.cls.__name__, 
+        return "<%s(%s-%r)>" % (self.__class__.__name__, self.cls.__name__,
                                 self.rowkeys)
 
 class MultiColumnQuery(object):
@@ -1198,7 +1114,7 @@ class MultiColumnQuery(object):
 
         if self.sort_key:
             def sort_key(tup):
-                # Need to point the supplied sort key at the correct item in 
+                # Need to point the supplied sort key at the correct item in
                 # the (sortable, item, generator) tuple
                 return self.sort_key(tup[0])
         else:
@@ -1318,7 +1234,7 @@ class Query(object):
 
 class View(ThingBase):
     # Views are Things like any other, but may have special key
-    # characteristics. Uses ColumnQuery for queries across a row. 
+    # characteristics. Uses ColumnQuery for queries across a row.
 
     _timestamp_prop = None
     _value_type = 'str'
@@ -1337,7 +1253,7 @@ class View(ThingBase):
 
     @classmethod
     def _obj_to_column(cls, objs):
-        """Mapping from _view_of object --> view column. Returns a 
+        """Mapping from _view_of object --> view column. Returns a
         single item dict {column name:column value} or list of dicts."""
         objs, is_single = tup(objs, ret_is_single=True)
 
@@ -1373,7 +1289,7 @@ class View(ThingBase):
 
         column_reversed = not reverse   # Reverse convention for cassandra is opposite
 
-        q = cls._query_cls(cls, rowkeys, column_count=count, 
+        q = cls._query_cls(cls, rowkeys, column_count=count,
                            column_reversed=column_reversed,
                            column_to_obj=cls._column_to_obj,
                            obj_to_column=cls._obj_to_column)
@@ -1421,6 +1337,76 @@ class View(ThingBase):
 
         # can we be smarter here?
         thing_cache.delete(cls._cache_key_id(row_key))
+
+    @classmethod
+    @will_write
+    def _remove(cls, key, columns):
+        cls._cf.remove(key, columns)
+        thing_cache.delete(cls._cache_key_id(key))
+
+class DenormalizedView(View):
+    """Store the entire underlying object inside the View column."""
+
+    @classmethod
+    def is_date_prop(cls, attr):
+        view_cls = cls._view_of
+        return (view_cls._value_type == 'date' or
+                attr in view_cls._date_props or
+                view_cls._timestamp_prop and attr == view_cls._timestamp_prop)
+
+    @classmethod
+    def _thing_dumper(cls, thing):
+        serialize_fn = cls._view_of._serialize_column
+        serialized_columns = dict((attr, serialize_fn(attr, val)) for
+            (attr, val) in thing._orig.iteritems())
+
+        # Encode date props which may be binary
+        for attr, val in serialized_columns.items():
+            if cls.is_date_prop(attr):
+                serialized_columns[attr] = base64.b64encode(val)
+
+        dump = json.dumps(serialized_columns)
+        return dump
+
+    @classmethod
+    def _thing_loader(cls, _id, dump):
+        serialized_columns = json.loads(dump)
+
+        # Decode date props
+        for attr, val in serialized_columns.items():
+            if cls.is_date_prop(attr):
+                serialized_columns[attr] = base64.b64decode(val)
+
+        obj = cls._view_of._from_serialized_columns(_id, serialized_columns)
+        return obj
+
+    @classmethod
+    def _obj_to_column(cls, objs):
+        objs = tup(objs)
+        columns = []
+        for o in objs:
+            _id = o._id
+            dump = cls._thing_dumper(o)
+            columns.append({_id: dump})
+
+        if len(columns) == 1:
+            return columns[0]
+        else:
+            return columns
+
+    @classmethod
+    def _column_to_obj(cls, columns):
+        columns = tup(columns)
+        objs = []
+        for column in columns:
+            _id, dump = column.items()[0]
+            obj = cls._thing_loader(_id, dump)
+            objs.append(obj)
+
+        if len(objs) == 1:
+            return objs[0]
+        else:
+            return objs
 
 def schema_report():
     manager = get_manager()

@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -96,7 +96,7 @@ def fetch_url(url, referer = None, retries = 1, dimension = False):
     nothing = None if dimension else (None, None)
     url = clean_url(url)
     #just basic urls
-    if not (url.startswith('http://') or url.startswith('https://')):
+    if not url.startswith(('http://', 'https://')):
         return nothing
     while True:
         try:
@@ -659,6 +659,19 @@ class OEmbed(Scraper):
     def __repr__(self):
         return "%s(%r)" % (self.__class__.__name__, self.url)
 
+    def utf8_encode(self, input):
+        """UTF-8 encodes any strings in an object (from json.loads)"""
+        if isinstance(input, dict):
+            return {self.utf8_encode(key): self.utf8_encode(value)
+                    for key, value in input.iteritems()}
+        elif isinstance(input, list):
+            return [self.utf8_encode(item)
+                    for item in input]
+        elif isinstance(input, unicode):
+            return input.encode('utf-8')
+        else:
+            return input
+
     def download(self):
         self.api_params.update( { 'url':self.url})
         query = urllib.urlencode(self.api_params)      
@@ -669,12 +682,13 @@ class OEmbed(Scraper):
         #Either a 404 or 500. 
         if not self.content:
             #raise ValueError('ISSUE CALLING %s' %api_url)
-            log.warn('oEmbed call (%s) failed to return content for %s'
+            log.warning('oEmbed call (%s) failed to return content for %s'
                     %(api_url, self.url))
             return None
 
         try:
-            self.oembed  = json.loads(self.content)
+            self.oembed = json.loads(self.content,
+                                     object_hook=self.utf8_encode)
         except ValueError, e:
             log.error('oEmbed call (%s) return invalid json for %s' 
                       %(api_url, self.url))
@@ -1789,8 +1803,7 @@ def submit_all():
         except Exception, e:
             print e
 
-        if g.write_query_queue:
-            queries.new_link(l)
+        queries.new_link(l)
 
         links.append(l)
 

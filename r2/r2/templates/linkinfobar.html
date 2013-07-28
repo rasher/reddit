@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -52,13 +52,13 @@
 
   <span class="upvotes">
     ${unsafe(strings.person_label % dict(num = format_number(thing.a.upvotes),
-                                         persons = ungettext("up vote", "up votes", 
+                                         persons = ungettext("upvote", "upvotes",
                                          thing.a.upvotes)))}
   </span>
   &#32;
   <span class="downvotes">
     ${unsafe(strings.person_label % dict(num = format_number(thing.a.downvotes),
-                                         persons = ungettext("down vote", "down votes", 
+                                         persons = ungettext("downvote", "downvotes",
                                          thing.a.downvotes)))}
   </span>
 

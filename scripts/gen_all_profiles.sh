@@ -17,7 +17,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -57,17 +57,22 @@ trap "rm -f $THING $DTHING" SIGINT SIGTERM
 # make this exist immediately to act as a lock
 touch $THING
 
+# Get the oldest ID from the thing table
+MINID=$(psql -F '\t' -A -t -d newreddit -U $USER -h $LINKDBHOST -p $DB_PORT -c "select thing_id from reddit_thing_$KIND t WHERE  t.date > now() - interval '1 $INTERVAL' and t.date < now() ORDER BY thing_id LIMIT 1")
+
+if [ -z $MINID ]; then
+  echo MINID is null. Replication is likely behind.
+  exit 1
+fi
+
 psql -F"\t" -A -t -d newreddit -U $USER -h $LINKDBHOST -p $DB_PORT \
      -c "\\copy (select t.thing_id, 'thing', '$KIND',
                         t.ups, t.downs, t.deleted, t.spam, extract(epoch from t.date)
                    from reddit_thing_$KIND t
                   where not t.deleted
-                     and t.date > now() - interval '1 $INTERVAL'
+                     and t.thing_id >= $MINID
                   )
                   to '$THING'"
-
-# get the min thing_id 
-MINID=`head -n 1 $THING | awk '{print $1}'`
 
 psql -F"\t" -A -t -d newreddit -U $USER -h $LINKDBHOST -p $DB_PORT \
      -c "\\copy (select d.thing_id, 'data', '$KIND',

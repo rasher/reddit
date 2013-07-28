@@ -16,30 +16,33 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
-import os.path
+import json
+import os
+import random
 
 import pylons
-import paste.fileapp
-from paste.httpexceptions import HTTPFound, HTTPMovedPermanently
-from pylons.middleware import error_document_template, media_path
-from pylons import c, request, g
+
+from webob.exc import HTTPFound, HTTPMovedPermanently
 from pylons.i18n import _
-import random as rand
-from r2.lib.filters import safemarkdown, unsafe
+from pylons import c, g, request, response
 
 try:
-    # place all r2 specific imports in here.  If there is a code error, it'll get caught and
-    # the stack trace won't be presented to the user in production
-    from reddit_base import RedditController, Cookies
-    from r2.models.subreddit import DefaultSR, Subreddit
-    from r2.models.link import Link
-    from r2.lib import pages
-    from r2.lib.strings import strings, rand_strings
+    # place all r2 specific imports in here.  If there is a code error, it'll
+    # get caught and the stack trace won't be presented to the user in
+    # production
+    from r2.config import extensions
+    from r2.controllers.reddit_base import RedditController, Cookies
+    from r2.lib.errors import ErrorSet
+    from r2.lib.filters import websafe_json
+    from r2.lib import log, pages
+    from r2.lib.strings import rand_strings
     from r2.lib.template_helpers import static
+    from r2.models.link import Link
+    from r2.models.subreddit import DefaultSR, Subreddit
 except Exception, e:
     if g.debug:
         # if debug mode, let the error filter up to pylons to be handled
@@ -48,10 +51,8 @@ except Exception, e:
         # production environment: protect the code integrity!
         print "HuffmanEncodingError: make sure your python compiles before deploying, stupid!"
         # kill this app
-        import os
         os._exit(1)
 
-NUM_FAILIENS = 3
 
 redditbroke =  \
 '''<html>
@@ -71,6 +72,14 @@ redditbroke =  \
   </body>
 </html>
 '''
+
+
+FAILIEN_COUNT = 3
+def make_failien_url():
+    failien_number = random.randint(1, FAILIEN_COUNT)
+    failien_name = "youbrokeit%d.png" % failien_number
+    return static(failien_name)
+
 
 class ErrorController(RedditController):
     """Generates error documents as and when they are required.
@@ -92,24 +101,23 @@ class ErrorController(RedditController):
         except (HTTPMovedPermanently, HTTPFound):
             # ignore an attempt to redirect from an error page
             pass
-        except:
-            handle_awful_failure("Error occurred in ErrorController.__before__")
+        except Exception as e:
+            handle_awful_failure("ErrorController.__before__: %r" % e)
 
     def __after__(self): 
         try:
             RedditController.__after__(self)
-        except:
-            handle_awful_failure("Error occurred in ErrorController.__after__")
+        except Exception as e:
+            handle_awful_failure("ErrorController.__after__: %r" % e)
 
     def __call__(self, environ, start_response):
         try:
             return RedditController.__call__(self, environ, start_response)
-        except:
-            return handle_awful_failure("something really awful just happened.")
+        except Exception as e:
+            return handle_awful_failure("ErrorController.__call__: %r" % e)
 
 
     def send403(self):
-        c.response.status_code = 403
         c.site = DefaultSR()
         if 'usable_error_content' in request.environ:
             return request.environ['usable_error_content']
@@ -121,32 +129,31 @@ class ErrorController(RedditController):
             return res.render()
 
     def send404(self):
-        c.response.status_code = 404
         if 'usable_error_content' in request.environ:
             return request.environ['usable_error_content']
         return pages.RedditError(_("page not found"),
                                  _("the page you requested does not exist")).render()
 
     def send429(self):
-        c.response.status_code = 429
-
-        if 'retry_after' in request.environ:
-            c.response.headers['Retry-After'] = str(request.environ['retry_after'])
+        retry_after = request.environ.get("retry_after")
+        if retry_after:
+            response.headers["Retry-After"] = str(retry_after)
             template_name = '/ratelimit_toofast.html'
         else:
             template_name = '/ratelimit_throttled.html'
 
-        loader = pylons.buffet.engines['mako']['engine']
-        template = loader.load_template(template_name)
+        template = g.mako_lookup.get_template(template_name)
         return template.render(logo_url=static(g.default_header_url))
 
     def send503(self):
-        c.response.status_code = 503
-        c.response.headers['Retry-After'] = request.environ['retry_after']
+        retry_after = request.environ.get("retry_after")
+        if retry_after:
+            response.headers["Retry-After"] = str(retry_after)
         return request.environ['usable_error_content']
 
     def GET_document(self):
         try:
+            c.errors = c.errors or ErrorSet()
             # clear cookies the old fashioned way 
             c.cookies = Cookies()
 
@@ -157,16 +164,27 @@ class ErrorController(RedditController):
                 code = 404
             srname = request.GET.get('srname', '')
             takedown = request.GET.get('takedown', "")
-            
+
+            # StatusBasedRedirect will override this anyway, but we need this
+            # here for pagecache to see.
+            response.status_int = code
+
             if srname:
                 c.site = Subreddit._by_name(srname)
-            if c.render_style not in self.allowed_render_styles:
-                if code not in (204, 304):
-                     c.response.content = str(code)
-                return c.response
-            elif c.render_style == "api":
-                c.response.content = "{\"error\": %s}" % code
-                return c.response
+
+            if code in (204, 304):
+                # NEVER return a content body on 204/304 or downstream
+                # caches may become very confused.
+                if request.GET.has_key('x-sup-id'):
+                    x_sup_id = request.GET.get('x-sup-id')
+                    if '\r\n' not in x_sup_id:
+                        response.headers['x-sup-id'] = x_sup_id
+                return ""
+            elif c.render_style not in self.allowed_render_styles:
+                return str(code)
+            elif c.render_style in extensions.API_TYPES:
+                data = request.environ.get('extra_error_data', {'error': code})
+                return websafe_json(json.dumps(data))
             elif takedown and code == 404:
                 link = Link._by_fullname(takedown)
                 return pages.TakedownPage(link).render()
@@ -175,26 +193,19 @@ class ErrorController(RedditController):
             elif code == 429:
                 return self.send429()
             elif code == 500:
-                randmin = {'admin': rand.choice(self.admins)}
-                failien_name = 'youbrokeit%d.png' % rand.randint(1, NUM_FAILIENS)
-                failien_url = static(failien_name)
+                randmin = {'admin': random.choice(self.admins)}
+                failien_url = make_failien_url()
                 return redditbroke % (failien_url, rand_strings.sadmessages % randmin)
             elif code == 503:
                 return self.send503()
-            elif code == 304:
-                if request.GET.has_key('x-sup-id'):
-                    x_sup_id = request.GET.get('x-sup-id')
-                    if '\r\n' not in x_sup_id:
-                        c.response.headers['x-sup-id'] = x_sup_id
-                return c.response
             elif c.site:
                 return self.send404()
             else:
                 return "page not found"
-        except:
-            return handle_awful_failure("something really bad just happened.")
+        except Exception as e:
+            return handle_awful_failure("ErrorController.GET_document: %r" % e)
 
-    POST_document = GET_document
+    POST_document = PUT_document = DELETE_document = GET_document
 
 def handle_awful_failure(fail_text):
     """
@@ -209,9 +220,10 @@ def handle_awful_failure(fail_text):
     try:
         # log the traceback, and flag the "path" as the error location
         import traceback
-        g.log.error("FULLPATH: %s" % fail_text)
-        g.log.error(traceback.format_exc())
-        return redditbroke % (rand.randint(1,NUM_FAILIENS), fail_text)
+        log.write_error_summary(fail_text)
+        for line in traceback.format_exc().splitlines():
+            g.log.error(line)
+        return redditbroke % (make_failien_url(), fail_text)
     except:
         # we are doomed.  Admit defeat
         return "This is an error that should never occur.  You win."

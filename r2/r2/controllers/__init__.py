@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -42,6 +42,7 @@ def load_controllers():
     from listingcontroller import ListingController
     from listingcontroller import HotController
     from listingcontroller import NewController
+    from listingcontroller import RisingController
     from listingcontroller import BrowseController
     from listingcontroller import MessageController
     from listingcontroller import RedditsController
@@ -49,6 +50,7 @@ def load_controllers():
     from listingcontroller import RandomrisingController
     from listingcontroller import UserController
     from listingcontroller import CommentsController
+    from listingcontroller import GildedController
 
     from listingcontroller import MyredditsController
 
@@ -57,34 +59,32 @@ def load_controllers():
     from front import FrontController
     from health import HealthController
     from buttons import ButtonsController
-    from buttons import ButtonjsController
     from captcha import CaptchaController
     from embed import EmbedController
     from error import ErrorController
     from post import PostController
     from toolbar import ToolbarController
     from awards import AwardsController
-    from ads import AdsController
-    from usage import UsageController
     from errorlog import ErrorlogController
     from promotecontroller import PromoteController
     from mediaembed import MediaembedController
     from mediaembed import AdController
+    from policies import PoliciesController
+    
+    from wiki import WikiController
+    from wiki import WikiApiController
 
-    from querycontroller import QueryController
-
-    try:
-        from r2admin.controllers.adminapi import ApiController
-    except ImportError:
-        from api import ApiController
-
+    from api import ApiController
     from api import ApiminimalController
     from api_docs import ApidocsController
     from apiv1 import APIv1Controller
+    from multi import MultiApiController
     from oauth2 import OAuth2FrontendController
     from oauth2 import OAuth2AccessController
-    from admin import AdminController
     from redirect import RedirectController
     from ipn import IpnController
+    from ipn import StripeController
+    from ipn import CoinbaseController
+    from ipn import RedditGiftsController
 
     _reddit_controllers.update((name.lower(), obj) for name, obj in locals().iteritems())

@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -35,7 +35,7 @@ from .. utils import iters, Results, tup, to36, Storage, thing_utils, timefromno
 from r2.config import cache
 from r2.lib.cache import sgm
 from r2.lib.log import log_text
-from r2.lib import stats
+from r2.lib import stats, hooks
 from pylons import g
 
 
@@ -232,32 +232,44 @@ class DataThing(object):
         return self._dirty
 
     def _commit(self, keys=None):
-        if not self._created:
-            self._create()
-            just_created = True
-        else:
-            just_created = False
+        lock = None
 
-        with g.make_lock("thing_commit", 'commit_' + self._fullname):
-            if not self._sync_latest():
+        try:
+            if not self._created:
+                begin()
+                self._create()
+                just_created = True
+            else:
+                just_created = False
+
+            lock = g.make_lock("thing_commit", 'commit_' + self._fullname)
+            lock.acquire()
+
+            if not just_created and not self._sync_latest():
                 #sync'd and we have nothing to do now, but we still cache anyway
                 self._cache_myself()
                 return
 
+            # begin is a no-op if already done, but in the not-just-created
+            # case we need to do this here because the else block is not
+            # executed when the try block is exited prematurely in any way
+            # (including the return in the above branch)
+            begin()
+
+            to_set = self._dirties.copy()
             if keys:
                 keys = tup(keys)
-                to_set = dict((k, self._dirties[k][1])
-                              for k in keys if self._dirties.has_key(k))
-            else:
-                to_set = dict((k, v[1]) for k, v in self._dirties.iteritems())
+                for key in to_set.keys():
+                    if key not in keys:
+                        del to_set[key]
 
             data_props = {}
             thing_props = {}
-            for k, v in to_set.iteritems():
+            for k, (old_value, new_value) in to_set.iteritems():
                 if k.startswith('_'):
-                    thing_props[k[1:]] = v
+                    thing_props[k[1:]] = new_value
                 else:
-                    data_props[k] = v
+                    data_props[k] = new_value
 
             if data_props:
                 self._set_data(self._type_id,
@@ -276,6 +288,16 @@ class DataThing(object):
                 self._dirties.clear()
 
             self._cache_myself()
+        except:
+            rollback()
+            raise
+        else:
+            commit()
+        finally:
+            if lock:
+                lock.release()
+
+        hooks.get_hook("thing.commit").call(thing=self, changes=to_set)
 
     @classmethod
     def _load_multi(cls, need):
@@ -360,7 +382,7 @@ class DataThing(object):
     #TODO error when something isn't found?
     @classmethod
     def _byID(cls, ids, data=False, return_dict=True, extra_props=None,
-              stale=False):
+              stale=False, ignore_missing=False):
         ids, single = tup(ids, True)
         prefix = thing_prefix(cls.__name__)
 
@@ -385,17 +407,20 @@ class DataThing(object):
         bases = sgm(cache, ids, items_db, prefix, stale=stale,
                     found_fn=count_found)
 
-        #check to see if we found everything we asked for
+        # Check to see if we found everything we asked for
+        missing = []
         for i in ids:
             if i not in bases:
-                missing = [i for i in ids if i not in bases]
-                raise NotFound, '%s %s' % (cls.__name__, missing)
-            if bases[i] and bases[i]._id != i:
+                missing.append(i)
+            elif bases[i] and bases[i]._id != i:
                 g.log.error("thing.py: Doppleganger on byID: %s got %s for %s" %
                             (cls.__name__, bases[i]._id, i))
                 bases[i] = items_db([i]).values()[0]
                 bases[i]._cache_myself()
-
+        if missing and not ignore_missing:
+            raise NotFound, '%s %s' % (cls.__name__, missing)
+        for i in missing:
+            ids.remove(i)
 
         if data:
             need = []
@@ -418,7 +443,7 @@ class DataThing(object):
                     bases[_id].__setattr__(k, v, False)
 
         if single:
-            return bases[ids[0]]
+            return bases[ids[0]] if ids else None
         elif return_dict:
             return bases
         else:
@@ -433,17 +458,19 @@ class DataThing(object):
         ids = [ int(x, 36) for x in id36s ]
 
         things = cls._byID(ids, return_dict=True, **kw)
+        things = {thing._id36: thing for thing in things.itervalues()}
 
         if single:
             return things.values()[0]
         elif return_dict:
             return things
         else:
-            return things.values()
+            return filter(None, (things.get(i) for i in id36s))
 
     @classmethod
     def _by_fullname(cls, names,
                      return_dict = True, 
+                     ignore_missing=False,
                      **kw):
         names, single = tup(names, True)
 
@@ -462,14 +489,14 @@ class DataThing(object):
                 thing_id = int(thing_id, 36)
                 lookup[fullname] = (real_type, thing_id)
                 table.setdefault(real_type, []).append(thing_id)
-            except ValueError:
+            except (KeyError, ValueError):
                 if single:
                     raise NotFound
 
         # lookup ids for each type
         identified = {}
         for real_type, thing_ids in table.iteritems():
-            i = real_type._byID(thing_ids, **kw)
+            i = real_type._byID(thing_ids, ignore_missing=ignore_missing, **kw)
             identified[real_type] = i
 
         # interleave types in original order of the name
@@ -477,11 +504,13 @@ class DataThing(object):
         for fullname in names:
             if lookup.has_key(fullname):
                 real_type, thing_id = lookup[fullname]
-                res.append((fullname,
-                            identified.get(real_type, {}).get(thing_id)))
+                thing = identified.get(real_type, {}).get(thing_id)
+                if not thing and ignore_missing:
+                    continue
+                res.append((fullname, thing))
 
         if single:
-            return res[0][1]
+            return res[0][1] if res else None
         elif return_dict:
             return dict(res)
         else:
@@ -880,7 +909,6 @@ class Query(object):
         self._read_cache = kw.get('read_cache')
         self._write_cache = kw.get('write_cache')
         self._cache_time = kw.get('cache_time', 0)
-        self._stats_collector = kw.get('stats_collector')
         self._limit = kw.get('limit')
         self._data = kw.get('data')
         self._sort = kw.get('sort', ())
@@ -984,9 +1012,6 @@ class Query(object):
 
     def __iter__(self):
         used_cache = False
-
-        if self._stats_collector:
-            self._stats_collector.add(self)
 
         def _retrieve():
             return self._cursor().fetchall()

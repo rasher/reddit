@@ -16,13 +16,15 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
+from random import shuffle
+
 from builder import Builder, MAX_RECURSION, empty_listing
 from r2.lib.wrapped import Wrapped
-from r2.lib.comment_tree import link_comments, link_comments_and_sort, tree_sort_fn, MAX_ITERATIONS
+from r2.lib.comment_tree import link_comments_and_sort, tree_sort_fn, MAX_ITERATIONS
 from r2.models.link import *
 from r2.lib.db import operators
 from r2.lib import utils
@@ -50,11 +52,10 @@ class _CommentBuilder(Builder):
         cdef list cid
         cdef dict cid_tree
         cdef dict depth
-        cdef dict num_children
         cdef dict parents
         cdef dict sorter
 
-        r = link_comments_and_sort(self.link._id, self.sort.col)
+        r = link_comments_and_sort(self.link, self.sort.col)
         cids, cid_tree, depth, num_children, parents, sorter = r
 
         cdef dict debug_dict = dict(
@@ -186,7 +187,8 @@ class _CommentBuilder(Builder):
 
         for cm in wrapped:
             # don't show spam with no children
-            if cm.deleted and not cid_tree.has_key(cm._id):
+            if (cm.deleted and not cid_tree.has_key(cm._id)
+                and not c.user_is_admin):
                 continue
             cm.num_children = num_children[cm._id]
             if cm.collapsed and cm._id in dont_collapse:
@@ -274,6 +276,9 @@ class _CommentBuilder(Builder):
             mc2.count += 1
             iteration_count += 1
 
+        if isinstance(self.sort, operators.shuffled):
+            shuffle(final)
+
         return final
 
 class _MessageBuilder(Builder):
@@ -307,7 +312,7 @@ class _MessageBuilder(Builder):
 
         # m is wrapped at this time, so it should have an SR
         subreddit = getattr(m, "subreddit", None)
-        if subreddit and subreddit.is_moderator(c.user):
+        if subreddit and subreddit.is_moderator_with_perms(c.user, 'mail'):
             return True
 
         return False

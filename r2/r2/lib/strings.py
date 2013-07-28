@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -33,6 +33,7 @@ from pylons.i18n import _, ungettext, get_lang
 import random
 import babel.numbers
 
+from r2.lib.permissions import ModeratorPermissionSet
 from r2.lib.translation import set_lang
 
 __all__ = ['StringHandler', 'strings', 'PluralManager', 'plurals',
@@ -65,18 +66,17 @@ string_dict = dict(
     # this is for Japanese which treats people counts differently
     person_label = _("<span class='number'>%(num)s</span>&#32;<span class='word'>%(persons)s</span>"),
 
-    firsttext = _("reddit is a source for what's new and popular online. vote on links that you like or dislike and help decide what's popular, or submit your own! [learn more &rsaquo;](/about)"),
-
     already_submitted = _("that link has already been submitted, but you can try to [submit it again](%s)."),
 
-    multiple_submitted = _("that link has been submitted to multiple reddits. you can try to [submit it again](%s)."),
+    multiple_submitted = _("that link has been submitted to multiple subreddits. you can try to [submit it again](%s)."),
 
     user_deleted = _("your account has been deleted, but we won't judge you for it."),
 
     cover_msg      = _("you'll need to login or register to do that"),
     cover_disclaim = _("(don't worry, it only takes a few seconds)"),
 
-    oauth_login_msg = _("Log in or register to connect your reddit account with [%(app_name)s](%(app_about_url)s)."),
+    oauth_login_msg = _(
+        "Log in or register to connect your reddit account with %(app)s."),
 
     login_fallback_msg = _("try using our secure login form."),
 
@@ -84,39 +84,21 @@ string_dict = dict(
 
     friends = _('to view reddit with only submissions from your friends, use [reddit.com/r/friends](%s)'),
 
-    sr_created = _('your reddit has been created'),
+    sr_created = _('your subreddit has been created'),
 
-    active_trials = _("we haven't yet decided whether these things are spam, so you have a chance to change your vote:"),
-    finished_trials = _("it's too late to change your vote on these things (the verdict has been issued):"),
     more_info_link = _("visit [%(link)s](%(link)s) for more information"),
 
-    msg_add_friend = dict(
-        friend = None,
-        moderator = _("you have been added as a moderator to [%(title)s](%(url)s)."),
-        contributor = _("you have been added as an approved submitter to [%(title)s](%(url)s)."),
-        banned = _("you have been banned from posting to [%(title)s](%(url)s)."),
-        traffic = _('you have been added to the list of users able to see [traffic for the sponsored link "%(title)s"](%(traffic_url)s).')
-        ),
-
-    subj_add_friend = dict(
-        friend = None,
-        moderator = _("you are a moderator"),
-        contributor = _("you are an approved submitter"),
-        banned = _("you've been banned"),
-        traffic = _("you can view traffic on a promoted link")
-        ),
-
     sr_messages = dict(
-        empty =  _('you have not subscribed to any reddits.'),
-        subscriber =  _('below are the reddits you have subscribed to'),
-        contributor =  _('below are the reddits that you are an approved submitter on.'),
-        moderator = _('below are the reddits that you have moderator access to.')
+        empty =  _('you have not subscribed to any subreddits.'),
+        subscriber =  _('below are the subreddits you have subscribed to'),
+        contributor =  _('below are the subreddits that you are an approved submitter on.'),
+        moderator = _('below are the subreddits that you have moderator access to.')
         ),
 
-    sr_subscribe =  _('click the `subscribe` or `unsubscribe` buttons to choose which reddits appear on your front page.'),
+    sr_subscribe =  _('click the `subscribe` or `unsubscribe` buttons to choose which subreddits appear on your front page.'),
 
-    searching_a_reddit = _('you\'re searching within the [%(reddit_name)s](%(reddit_link)s) reddit. '+
-                           'you can also search within [all reddits](%(all_reddits_link)s)'),
+    searching_a_reddit = _('you\'re searching within the [%(reddit_name)s](%(reddit_link)s) subreddit. '+
+                           'you can also search within [all subreddits](%(all_reddits_link)s)'),
 
     css_validator_messages = dict(
         broken_url = _('"%(brokenurl)s" is not a valid URL'),
@@ -129,9 +111,6 @@ string_dict = dict(
         invalid_property_list = _('invalid CSS property list "%(proplist)s"'),
         unknown_rule_type = _('unknown CSS rule type "%(ruletype)s"')
     ),
-    submit_box_text = _('to anything interesting: news article, blog entry, video, picture...'),
-    submit_box_restricted_text = _('submission in this subreddit is restricted to approved submitters.'),
-    submit_box_archived_text = _('this subreddit is archived and no longer accepting submissions.'),
     permalink_title = _("%(author)s comments on %(title)s"),
     link_info_title = _("%(title)s : %(site)s"),
     banned_subreddit_title = _("this subreddit has been banned"),
@@ -142,7 +121,9 @@ string_dict = dict(
 
     submit_link = _("""You are submitting a link. The key to a successful submission is interesting content and a descriptive title."""),
     submit_text = _("""You are submitting a text-based post. Speak your mind. A title is required, but expanding further in the text field is not. Beginning your title with "vote up if" is violation of intergalactic law."""),
-    iphone_first = _("You should consider using [reddit's mobile interface](http://i.reddit.com/)."),
+    submit_link_label = _("Submit a new link"),
+    submit_text_label = _("Submit a new text post"),
+    compact_suggest = _("Looks like you're browsing on a small screen. Would you like to try [reddit's mobile interface](%(url)s)?"),
     verify_email = _("we're going to need to verify your email address for you to proceed."),
     verify_email_submit = _("you'll be able to submit more frequently once you verify your email address"),
     email_verified =  _("your email address has been verfied"),
@@ -151,22 +132,28 @@ string_dict = dict(
     invalid_search_query = _("I couldn't understand your query, so I simplified it and searched for \"%(clean_query)s\" instead."),
     completely_invalid_search_query = _("I couldn't understand your search query. Please try again."),
     search_help = _("You may also want to check the [search help page](%(search_help)s) for more information."),
+    formatting_help_info = _('reddit uses a slightly-customized version of [Markdown](http://daringfireball.net/projects/markdown/syntax) for formatting. See below for some basics, or check [the commenting wiki page](/wiki/commenting) for more detailed help and solutions to common issues.'),
     generic_quota_msg = _("You've submitted too many links recently. Please try again in an hour."),
     verified_quota_msg = _("Looks like you're either a brand new user or your posts have not been doing well recently. You may have to wait a bit to post again. In the meantime feel free to [check out the reddiquette](%(reddiquette)s) or join the conversation in a different thread."),
     unverified_quota_msg = _("Looks like you're either a brand new user or your posts have not been doing well recently. You may have to wait a bit to post again. In the meantime feel free to [check out the reddiquette](%(reddiquette)s), join the conversation in a different thread, or [verify your email address](%(verify)s)."),
     read_only_msg = _("reddit is in \"emergency read-only mode\" right now. :( you won't be able to log in. we're sorry, and are working frantically to fix the problem."),
     heavy_load_msg = _("this page is temporarily in read-only mode due to heavy traffic."),
-    lounge_msg = _("Please grab a drink and join us in [the lounge](%(link)s)."),
+    gold_benefits_msg = _("Being a reddit gold member gives you access to a bunch of new site features and other benefits. Be sure to check out **[the reddit gold information page](/gold/about)** to see what's currently available, and subscribe to **/r/goldbenefits** to keep up with announcements of new benefits."),
+    lounge_msg = _("please grab a drink and join us in [the lounge](%(link)s)."),
     postcard_msg = _("You sent us a postcard! (Or something similar.) When we run out of room on our refrigerator, we might one day auction off the stuff that people sent in. Is it okay if we include your thing?"),
     over_comment_limit = _("Sorry, the maximum number of comments is %(max)d. (However, if you subscribe to reddit gold, it goes up to %(goldmax)d.)"),
     over_comment_limit_gold = _("Sorry, the maximum number of comments is %d."),
     youve_got_gold = _("%(sender)s just sent you %(amount)s of reddit gold! Wasn't that nice?"),
     giftgold_note = _("Here's a note that was included:\n\n----\n\n"),
+    youve_got_comment_gold = _("A redditor liked [your comment](%(url)s) so much, they gave you a month of reddit gold. Shiny!"),
     gold_summary_autorenew = _("You're about to set up an ongoing, autorenewing subscription to reddit gold for yourself (%(user)s)."),
     gold_summary_onetime = _("You're about to make a one-time purchase of %(amount)s of reddit gold for yourself (%(user)s)."),
     gold_summary_creddits = _("You're about to purchase %(amount)s of reddit gold creddits. They work like gift certificates: each creddit you have will allow you to give one month of reddit gold to someone else."),
     gold_summary_signed_gift = _("You're about to give %(amount)s of reddit gold to %(recipient)s, who will be told that it came from you."),
     gold_summary_anonymous_gift = _("You're about to give %(amount)s of reddit gold to %(recipient)s. It will be an anonymous gift."),
+    gold_summary_comment_gift = _("Want to say thanks to *%(recipient)s* for this comment? Give them a month of [reddit gold](/gold/about)."),
+    gold_summary_comment_page = _("Give *%(recipient)s* a month of [reddit gold](/gold/about) for this comment:"),
+    gold_partners_description = _('reddit gold members get access to exclusive stuff'),
     unvotable_message = _("sorry, this has been archived and can no longer be voted on"),
     account_activity_blurb = _("This page shows a history of recent activity on your account. If you notice unusual activity, you should change your password immediately. Location information is guessed from your computer's IP address and may be wildly wrong, especially for visits from mobile devices. Note: due to a bug, private-use addresses (starting with 10.) sometimes show up erroneously in this list after regular use of the site."),
     your_current_ip_is = _("You are currently accessing reddit from this IP address: %(address)s."),
@@ -179,6 +166,7 @@ apps below.
     traffic_promoted_link_explanation = _("Below you will see your promotion's impression and click traffic per hour of promotion.  Please note that these traffic totals will lag behind by two to three hours, and that daily totals will be preliminary until 24 hours after the link has finished its run."),
     traffic_processing_slow = _("Traffic processing is currently running slow. The latest data available is from %(date)s. This page will be updated as new data becomes available."),
     traffic_processing_normal = _("Traffic processing occurs on an hourly basis. The latest data available is from %(date)s. This page will be updated as new data becomes available."),
+    traffic_help_email = _("Questions? Email self serve support: %(email)s"),
 
     traffic_subreddit_explanation = _("""
 Below are the traffic statistics for your subreddit. Each graph represents one of the following over the interval specified.
@@ -193,8 +181,44 @@ Note: there are a couple of places outside of your subreddit where someone can c
     go = _("go"),
     view_subreddit_traffic = _("view subreddit traffic"),
 
-    an_error_occurred = _("an error occurred"),
-    an_error_occurred_friendly = _("an error occurred. please try again later!"),
+    an_error_occurred = _("an error occurred (status: %(status)s)"),
+    an_error_occurred_friendly = _("an error occurred. please try again later! (status: %(status)s)"),
+    rate_limit = _("please wait a few seconds and try again."),
+    subscribed_multi = _("multireddit of your subscriptions"),
+    mod_multi = _("multireddit of subreddits you moderate"),
+
+    r_all_description = _("/r/all displays content from all of reddit, including subreddits you aren't subscribed to."),
+    r_all_minus_description = _("Displaying content from /r/all of reddit, except the following subreddits:"),
+    all_minus_gold_only = _('Filtering /r/all is a feature only available to [reddit gold](/gold/about) subscribers. Displaying unfiltered results from /r/all.'),
+
+    missing_credit_name = _("missing name"),
+    bad_credit_number = _("invalid credit card number"),
+    bad_credit_expiry = _("invalid expiration date"),
+    bad_credit_cvc = _("invalid cvc"),
+    missing_credit_address = _("missing address"),
+    missing_credit_city = _("missing city"),
+    missing_credit_state = _("missing state or province"),
+    missing_credit_country = _("missing country"),
+    missing_credit_zip = _("missing zip code"),
+
+    permissions = dict(
+        info=dict(
+            moderator=ModeratorPermissionSet.info,
+            moderator_invite=ModeratorPermissionSet.info,
+        ),
+        all_msg=_("full permissions"),
+        none_msg=_("no permissions"),
+    ),
+    categorize = _('categorize'),
+    are_you_sure = _('are you sure?'),
+    yes = _('yes'),
+    no = _('no'),
+    create_multi = _('create a new multi'),
+    awesomeness_goes_here = _('awesomeness goes here'),
+    add_multi_sr = _('add a subreddit to your multi.'),
+    open_multi = _('open this multi'),
+    summarize_and_n_more = _('&hellip; and %(count)s more &rArr;'),
+    summarize_less = _('&lArr; less'),
 )
 
 class StringHandler(object):
@@ -204,6 +228,12 @@ class StringHandler(object):
     returned."""
     def __init__(self, **sdict):
         self.string_dict = sdict
+
+    def get(self, attr, default=None):
+        try:
+            return self[attr]
+        except KeyError:
+            return default
 
     def __getitem__(self, attr):
         try:
@@ -216,7 +246,7 @@ class StringHandler(object):
         if isinstance(rval, (str, unicode)):
             return _(rval)
         elif isinstance(rval, dict):
-            return dict((k, _(v)) for k, v in rval.iteritems())
+            return StringHandler(**rval)
         else:
             raise AttributeError
     

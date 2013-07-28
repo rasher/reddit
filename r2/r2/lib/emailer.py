@@ -16,25 +16,26 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 from email.MIMEText import MIMEText
-from pylons.i18n import _
-from pylons import c, g
-from r2.lib.utils import timeago, query_string, randstr
-from r2.models import passhash, Email, DefaultSR, has_opted_out, Account, Award
-import os, random, datetime
+import datetime
 import traceback, sys, smtplib
+
+from pylons import c, g
+
+from r2.lib.utils import timeago
+from r2.models import Email, DefaultSR, Account, Award
 from r2.models.token import EmailVerificationToken, PasswordResetToken
 
 
 def _feedback_email(email, body, kind, name='', reply_to = ''):
     """Function for handling feedback and ad_inq emails.  Adds an
     email to the mail queue to the feedback email account."""
-    Email.handler.add_to_queue(c.user if c.user_is_loggedin else None, 
-                               g.feedback_email, name, email, 
+    Email.handler.add_to_queue(c.user if c.user_is_loggedin else None,
+                               g.feedback_email, name, email,
                                kind, body = body, reply_to = reply_to)
 
 def _system_email(email, body, kind, reply_to = "", thing = None):
@@ -61,7 +62,7 @@ def _gold_email(body, to_address, from_name, kind):
     Email.handler.add_to_queue(None, to_address, from_name, g.goldthanks_email,
                                kind, body = body)
 
-def verify_email(user, dest):
+def verify_email(user):
     """
     For verifying an email address
     """
@@ -71,8 +72,7 @@ def verify_email(user, dest):
     Award.take_away("verified_email", user)
 
     token = EmailVerificationToken._new(user)
-    emaillink = ('http://' + g.domain + '/verification/' + token._id
-                 + query_string(dict(dest=dest)))
+    emaillink = 'http://' + g.domain + '/verification/' + token._id
     g.log.debug("Generated email verification link: " + emaillink)
 
     _system_email(user.email,
@@ -105,19 +105,30 @@ def password_email(user):
                   Email.Kind.RESET_PASSWORD)
     return True
 
+def password_change_email(user):
+    """Queues a system email for a password change notification."""
+    from r2.lib.pages import PasswordChangeEmail
+
+    return _system_email(user.email,
+                         PasswordChangeEmail(user=user).render(style='email'),
+                         Email.Kind.PASSWORD_CHANGE)
+
+def email_change_email(user):
+    """Queues a system email for a email change notification."""
+    from r2.lib.pages import EmailChangeEmail
+
+    return _system_email(user.email,
+                         EmailChangeEmail(user=user).render(style='email'),
+                         Email.Kind.EMAIL_CHANGE)
+
 def feedback_email(email, body, name='', reply_to = ''):
     """Queues a feedback email to the feedback account."""
-    return _feedback_email(email, body,  Email.Kind.FEEDBACK, name = name, 
+    return _feedback_email(email, body,  Email.Kind.FEEDBACK, name = name,
                            reply_to = reply_to)
 
 def ad_inq_email(email, body, name='', reply_to = ''):
     """Queues a ad_inq email to the feedback account."""
     return _feedback_email(email, body,  Email.Kind.ADVERTISE, name = name,
-                           reply_to = reply_to)
-
-def i18n_email(email, body, name='', reply_to = ''):
-    """Queues a ad_inq email to the feedback account."""
-    return _feedback_email(email, body,  Email.Kind.HELP_TRANSLATE, name = name,
                            reply_to = reply_to)
 
 def gold_email(body, to_address, from_name=g.domain):
@@ -141,7 +152,7 @@ def send_queued_mail(test = False):
     """sends mail from the mail queue to smtplib for delivery.  Also,
     on successes, empties the mail queue and adds all emails to the
     sent_mail list."""
-    from r2.lib.pages import PasswordReset, Share, Mail_Opt, VerifyEmail
+    from r2.lib.pages import Share, Mail_Opt
     now = datetime.datetime.now(g.tz)
     if not c.site:
         c.site = DefaultSR()
@@ -200,11 +211,11 @@ def send_queued_mail(test = False):
     finally:
         if not test:
             session.quit()
-        
+
     # clear is true if anything was found and processed above
     if clear:
         Email.handler.clear_queue(now)
-            
+
 
 
 def opt_out(msg_hash):
@@ -214,7 +225,7 @@ def opt_out(msg_hash):
     if email and added:
         _system_email(email, "", Email.Kind.OPTOUT)
     return email, added
-        
+
 def opt_in(msg_hash):
     """Queues an opt-in email (i.e., that the email has been removed
     from our opt out list)"""
@@ -237,7 +248,7 @@ def new_promo(thing):
     return _promo_email(thing, Email.Kind.NEW_PROMO)
 
 def promo_bid(thing, bid, start_date):
-    return _promo_email(thing, Email.Kind.BID_PROMO, bid = bid, 
+    return _promo_email(thing, Email.Kind.BID_PROMO, bid = bid,
                         start_date = start_date)
 
 def accept_promo(thing):

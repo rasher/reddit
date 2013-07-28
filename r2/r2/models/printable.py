@@ -16,12 +16,15 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
 from pylons import c, request
 from r2.lib.strings import Score
+from r2.lib import hooks
+
+
 class Printable(object):
     show_spam = False
     show_reports = False
@@ -65,6 +68,8 @@ class Printable(object):
                 item.display_score = map(CachedVariable,
                                          ["scoredislikes", "scoreunvoted",
                                           "scorelikes"])
+
+        hooks.get_hook("add_props").call(items=wrapped)
 
     @property
     def permalink(self, *a, **kw):

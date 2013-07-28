@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -29,9 +29,6 @@ from report import *
 from subreddit import *
 from flair import *
 from award import *
-from jury import *
-from trial import *
-from ad import *
 from bidding import *
 from mail_queue import Email, has_opted_out, opt_count
 from gold import *

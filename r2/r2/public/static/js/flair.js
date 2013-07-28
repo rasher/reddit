@@ -50,7 +50,7 @@ $(function() {
             input.css("display", "block");
             input.val($.trim($(this).children(".flair").text())).select();
             input.keyup(function() {
-                $(".flairselection .flair").text($(input).val());
+                $(".flairselection .flair").text($(input).val()).attr("title", $(input).val());
             });
         } else {
             customizer.removeClass("texteditable");
@@ -207,8 +207,7 @@ $(function() {
     });
     $(".flairtoggle input").change(function() { $(this).parent().submit(); });
 
-    $(".tagline").delegate(".flairselectbtn", "click", openFlairSelector);
-    $(".thing").delegate(".flairselectbtn", "click", openFlairSelector);
+    $(document).on("click", ".tagline .flairselectbtn, .thing .flairselectbtn", openFlairSelector);
 
     $(".flairselector .dropdown").click(toggleFlairSelector);
 });

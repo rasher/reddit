@@ -16,19 +16,21 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%!
+   from pylons import request
    from r2.lib.template_helpers import static, s3_https_if_secure, add_sr
    from r2.models import Sub, FakeSubreddit
    from r2.models.subreddit import DefaultSR
    from r2.lib.pages import SearchForm
+   from r2.lib import authentication
 %>
 <%namespace file="utils.html" import="plain_link, img_link, text_with_links, separator, logout"/>
 
-<div id="header">
+<div id="header" role="banner">
   <a tabindex="1" href="#content" id="jumpToContent">${_('jump to content')}</a>
   ${thing.srtopbar}
   <div id="header-bottom-${'right' if c.lang_rtl else 'left'}">
@@ -113,9 +115,9 @@
       %endif
     %endif
     ${thing.corner_buttons()}
-    %if c.user_is_loggedin:
+    %if c.user_is_loggedin and authentication.user_can_log_out():
       ${separator("|")}
-      ${logout()}
+      ${logout(dest=request.fullpath)}
     %endif
   </div>
 </div>

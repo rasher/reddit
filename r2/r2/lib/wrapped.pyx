@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -191,6 +191,10 @@ class Templated(object):
         """
         raise NotImplementedError
 
+    @property
+    def render_class_name(self):
+        return self.render_class.__name__
+
     def render_nocache(self, attr, style):
         """
         No-frills (or caching) rendering of the template.  The
@@ -199,11 +203,20 @@ class Templated(object):
         final form
         """
         from filters import unsafe
-        from pylons import c
+        from pylons import g, c
+
+        if self.render_class_name in g.timed_templates:
+            timer = g.stats.get_timer('render.%s.nocache' %
+                                      self.render_class_name,
+                                      publish=False)
+            timer.start()
+        else:
+            timer = None
 
         # the style has to default to the global render style
         # fetch template
         template = self.template(style)
+        if timer: timer.intermediate('template')
         if template:
             # store the global render style (since child templates)
             render_style = c.render_style
@@ -213,12 +226,15 @@ class Templated(object):
                 template = template.get_def(attr)
             # render the template
             res = template.render(thing = self)
+            if timer: timer.intermediate('render')
             if not isinstance(res, StringTemplate):
                 res = StringTemplate(res)
             # reset the global render style
             c.render_style = render_style
+            if timer: timer.stop()
             return res
         else:
+            # timings for not found templates will not be sent.
             self._notfound(style)
 
     def _render(self, attr, style, **kwargs):
@@ -244,6 +260,10 @@ class Templated(object):
         and will substituted last.
         """
         from pylons import c, g
+        timer = g.stats.get_timer('render.%s.cached' % self.render_class_name,
+                                  publish=False)
+        timer.start()
+
         style = style or c.render_style or 'html'
         # prepare (and store) the list of cachable items. 
         primary = False
@@ -265,6 +285,7 @@ class Templated(object):
         else:
             # either a primary template or not cachable, so render it
             res = self.render_nocache(attr, style)
+        timer.intermediate('self-render')
 
         # if this is the primary template, let the caching games begin
         if primary:
@@ -286,6 +307,7 @@ class Templated(object):
                 # This dict cast will generate a new dict of cache_key
                 # to value
                 cached = self._read_cache(dict(current.values()))
+                timer.intermediate('fetch-cache')
                 # replacements will be a map of key -> rendered content
                 # for updateing the current set of updates
                 replacements = {}
@@ -306,7 +328,8 @@ class Templated(object):
                     # cached for caching
                     replacements[key] = r.finalize(kw)
                     new_updates[key] = (cache_key, (r, kw))
-                        
+                timer.intermediate('sub-render')
+
                 # update the updates so that when we can do the
                 # replacement in one pass.
                 
@@ -331,11 +354,13 @@ class Templated(object):
                 if k in to_cache:
                     _to_cache[k] = v
             self._write_cache(_to_cache)
-    
+            timer.intermediate('write-cache')
+
             # edge case: this may be the primary tempalte and cachable
             if isinstance(res, CacheStub):
                 res = updates[res.name][1][0]
-                
+            timer.intermediate('replace')
+
             # now we can update the updates to make use of their kw args.
             _updates = {}
             for k, (foo, (v, kw)) in updates.iteritems():
@@ -353,12 +378,14 @@ class Templated(object):
                 if r.finalize() == res.finalize():
                     res = semi_final
                     break
-                
+
             # wipe out the render tracker object
             c.render_tracker = None
+            timer.stop()
         elif not isinstance(res, CacheStub):
             # we're done.  Update the template based on the args passed in
             res = res.finalize(kwargs)
+            # timings for non-primary templates will not be sent.
         
         return res
 

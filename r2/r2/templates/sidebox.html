@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -30,9 +30,13 @@
   </div>
 
   %if thing.subtitles:
-    <div class="spacer">
+    %if thing.show_icon:
+      <div class="spacer">
       ${plain_link('', thing.link, _sr_path=thing.sr_path,
                    _class='login-required' if thing.show_cover else None, nocname=thing.nocname)}
+    %else:
+      <div class="spacer no-icon">
+    %endif
       %for subtitle in thing.subtitles:
         <div class="subtitle">${subtitle}</div>
       %endfor

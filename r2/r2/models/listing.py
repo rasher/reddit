@@ -16,7 +16,7 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
@@ -31,6 +31,7 @@ from r2.lib import utils
 from r2.lib.db import operators
 from r2.lib.cache import sgm
 
+from collections import namedtuple
 from copy import deepcopy, copy
 
 class Listing(object):
@@ -88,6 +89,11 @@ class Listing(object):
             p.update({'after':next._fullname, 'before':None, 'count':acount})
             self.after = next._fullname
             self.next = (request.path + utils.query_string(p))
+
+        for count, thing in enumerate(self.things):
+            thing.rowstyle = getattr(thing, 'rowstyle', "")
+            thing.rowstyle += ' ' + ('even' if (count % 2) else 'odd')
+
         #TODO: need name for template -- must be better way
         return Wrapped(self)
 
@@ -97,6 +103,8 @@ class Listing(object):
 class TableListing(Listing): pass
 
 class ModActionListing(TableListing): pass
+
+class WikiRevisionListing(TableListing): pass
 
 class LinkListing(Listing):
     def __init__(self, *a, **kw):
@@ -122,32 +130,70 @@ class NestedListing(Listing):
         #make into a tree thing
         return Wrapped(self)
 
+SpotlightTuple = namedtuple('SpotlightTuple',
+                            ['link', 'is_promo', 'campaign', 'weight'])
+
 class SpotlightListing(Listing):
     # class used in Javascript to manage these objects
     _js_cls = "OrganicListing"
 
     def __init__(self, *a, **kw):
-        kw['vote_hash_type'] = kw.get('vote_hash_type', 'organic')
-        Listing.__init__(self, *a, **kw)
+        self.vote_hash_type = kw.get('vote_hash_type', 'organic')
         self.nextprev   = False
         self.show_nums  = True
         self._parent_max_num   = kw.get('max_num', 0)
         self._parent_max_score = kw.get('max_score', 0)
-        self.spotlight_items  = kw.get('spotlight_items', [])
-        self.visible_item = kw.get('visible_item', '')
+        self.interestbar = kw.get('interestbar')
+        self.interestbar_prob = kw.get('interestbar_prob', 0.)
+        self.promotion_prob = kw.get('promotion_prob', 0.5)
 
-    @property
-    def max_score(self):
-        return self._parent_max_score
+        promoted_links = kw.get('promoted_links', [])
+        organic_links = kw.get('organic_links', [])
+        predetermined_winner = kw.get('predetermined_winner', False)
 
-    @property
-    def max_num(self):
-        return self._parent_max_num
+        self.links = []
+        for l in organic_links:
+            self.links.append(
+                SpotlightTuple(
+                    link=l._fullname,
+                    is_promo=False,
+                    campaign=None,
+                    weight=None,
+                )
+            )
+
+        total = sum(float(l.weight) for l in promoted_links)
+        for i, l in enumerate(promoted_links):
+            link = l._fullname if isinstance(l, Wrapped) else l.link
+            if predetermined_winner:
+                weight = 1 if i == 0 else 0
+            else:
+                weight = l.weight / total
+            self.links.append(
+                SpotlightTuple(
+                    link=link,
+                    is_promo=True,
+                    campaign=l.campaign,
+                    weight=weight,
+                )
+            )
+
+        self.things = organic_links
+        self.things.extend(l for l in promoted_links
+                           if isinstance(l, Wrapped))
+
+
+    def get_items(self):
+        from r2.lib.template_helpers import replace_render
+        things = self.things
+        for t in things:
+            if not hasattr(t, "render_replaced"):
+                t.render = replace_render(self, t, t.render)
+                t.render_replaced = True
+        return things, None, None, 0, 0
 
     def listing(self):
         res = Listing.listing(self)
-        # suppress item numbering
         for t in res.things:
             t.num = ""
-        self.lookup = {t._fullname : t for t in self.things}
-        return res
+        return Wrapped(self)

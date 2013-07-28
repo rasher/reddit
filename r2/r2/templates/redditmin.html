@@ -16,18 +16,16 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
 <%inherit file="reddit.html"/>
 
-<%def name="bodyHTML()">
-  <body class="min-body">
-    %if thing.content:
-      <div class="content">
-        ${thing.content()}
-      </div>
-    %endif
-  </body>
+<%def name="bodyContent()">
+  %if thing.content:
+    <div class="content">
+      ${thing.content()}
+    </div>
+  %endif
 </%def>

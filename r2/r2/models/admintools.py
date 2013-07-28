@@ -16,15 +16,19 @@
 # The Original Developer is the Initial Developer.  The Initial Developer of
 # the Original Code is reddit Inc.
 #
-# All portions of the code written by reddit are Copyright (c) 2006-2012 reddit
+# All portions of the code written by reddit are Copyright (c) 2006-2013 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
 
+from r2.lib.errors import MessageError
 from r2.lib.utils import tup, fetch_things2
 from r2.lib.filters import websafe
 from r2.lib.log import log_text
-from r2.models import Report, Account, Subreddit
+from r2.models import Account, Message, Report, Subreddit
+from r2.models.award import Award
+from r2.models.token import AwardClaimToken
 
+from _pylibmc import MemcachedError
 from pylons import g
 
 from datetime import datetime, timedelta
@@ -57,6 +61,11 @@ class AdminTools(object):
 
             t._spam = True
 
+            if moderator_banned:
+                t.verdict = 'mod-removed'
+            elif not auto:
+                t.verdict = 'admin-removed'
+
             ban_info = copy(getattr(t, 'ban_info', {}))
             if isinstance(banner, dict):
                 ban_info['banner'] = banner[t._fullname]
@@ -77,7 +86,8 @@ class AdminTools(object):
 
         queries.ban(all_things, filtered=auto)
 
-    def unspam(self, things, unbanner=None, train_spam=True, insert=True):
+    def unspam(self, things, moderator_unbanned=True, unbanner=None,
+               train_spam=True, insert=True):
         from r2.lib.db import queries
 
         things = tup(things)
@@ -105,6 +115,10 @@ class AdminTools(object):
                 ban_info['reset_used'] = True
             t.ban_info = ban_info
             t._spam = False
+            if moderator_unbanned:
+                t.verdict = 'mod-approved'
+            else:
+                t.verdict = 'admin-approved'
             t._commit()
 
         self.author_spammer(things, False)
@@ -131,47 +145,6 @@ class AdminTools(object):
             for aid, author_things in by_aid.iteritems():
                 author = authors[aid]
                 author._incr('spammer', len(author_things) if spam else -len(author_things))
-
-
-    def email_attrs(self, account_ids, return_dict=True):
-        account_ids, single = tup(account_ids, True)
-
-        accounts = Account._byID(account_ids, data=True, return_dict=False)
-
-        rv = {}
-        canons = {}
-        aids_by_canon = {} # sounds terrifying
-
-        for a in accounts:
-            attrs = []
-            rv[a._id] = attrs
-
-            if not getattr(a, "email", None):
-                attrs.append(("gray", "no email specified", "X"))
-            else:
-                canon = a.canonical_email()
-                aids_by_canon.setdefault(canon, [])
-                aids_by_canon[canon].append(a._id)
-
-                verify_str = "verified email: " + canon
-                if getattr(a, "email_verified", None):
-                    attrs.append(("green", verify_str, "V"))
-                else:
-                    attrs.append(("gray", "un" + verify_str, "@"))
-
-        ban_reasons = Account.which_emails_are_banned(aids_by_canon.keys())
-
-        for canon, ban_reason in ban_reasons.iteritems():
-            if ban_reason:
-                for aid in aids_by_canon[canon]:
-                    rv[aid].append(("wrong", "banned email " + ban_reason, "B"))
-
-        if single:
-            return rv[account_ids[0]]
-        elif return_dict:
-            return rv
-        else:
-            return filter(None, (rv.get(i) for i in account_ids))
 
     def set_last_sr_ban(self, things):
         by_srid = {}
@@ -201,17 +174,13 @@ class AdminTools(object):
         description = "Since " + now.strftime("%B %Y")
         trophy = Award.give_if_needed("reddit_gold", account,
                                      description=description,
-                                     url="/help/gold")
+                                     url="/gold/about")
         if trophy and trophy.description.endswith("Member Emeritus"):
             trophy.description = description
             trophy._commit()
         account._commit()
 
         account.friend_rels_cache(_update=True)
-
-        if g.lounge_reddit:
-            sr = Subreddit._by_name(g.lounge_reddit)
-            sr.add_contributor(account)
 
     def degolden(self, account, severe=False):
 
@@ -223,12 +192,24 @@ class AdminTools(object):
         account.gold = False
         account._commit()
 
-        if g.lounge_reddit and not getattr(account, "gold_charter", False):
-            sr = Subreddit._by_name(g.lounge_reddit)
-            sr.remove_contributor(account)
-
     def admin_list(self):
         return list(g.admins)
+
+    def create_award_claim_code(self, unique_award_id, award_codename,
+                                description, url):
+        '''Create a one-time-use claim URL for a user to claim a trophy.
+
+        `unique_award_id` - A string that uniquely identifies the kind of
+                            Trophy the user would be claiming.
+                            See: token.py:AwardClaimToken.uid
+        `award_codename` - The codename of the Award the user will claim
+        `description` - The description the Trophy will receive
+        `url` - The URL the Trophy will receive
+
+        '''
+        award = Award._by_codename(award_codename)
+        token = AwardClaimToken._new(unique_award_id, award, description, url)
+        return token.confirm_url()
 
 admintools = AdminTools()
 
@@ -308,7 +289,7 @@ def update_gold_users(verbose=False):
                     print "Sending notice to %s" % account.name
                 g.hardcache.set(hc_key, True, 86400 * 10)
                 send_system_message(account, "Your reddit gold subscription is about to expire!",
-                                    "Your subscription to reddit gold will be expiring soon. [Click here for details on how to renew, or to set up an automatically-renewing subscription.](http://www.reddit.com/gold) Or, if you think we suck, just let your subscription lapse and go back to being a regular user.\n\nIf you have any questions, please write to 912@reddit.com.")
+                                    "Your subscription to reddit gold will be expiring soon. [Click here for details on how to renew, or to set up an automatically-renewing subscription.](http://www.reddit.com/gold) Or, if you don't want to, please write to us at 912@reddit.com and tell us where we let you down, so we can work on fixing the problem.")
 
     if verbose:
         for exp_date in sorted(expiration_dates.keys()):
@@ -327,10 +308,10 @@ def admin_ratelimit(user):
 def is_banned_IP(ip):
     return False
 
-def is_banned_domain(dom, ip):
+def is_banned_domain(dom):
     return None
 
-def is_shamed_domain(dom, ip):
+def is_shamed_domain(dom):
     return False, None, None
 
 def valid_thing(v, karma, *a, **kw):
@@ -359,10 +340,6 @@ def ip_span(ip):
     return '<!-- %s -->' % ip
 
 def filter_quotas(unfiltered):
-    from r2.lib.utils.trial_utils import trial_info
-
-    trials = trial_info(unfiltered)
-
     now = datetime.now(g.tz)
 
     baskets = {
@@ -398,9 +375,7 @@ def filter_quotas(unfiltered):
             'admin-approved', 'mod-approved')
 
         # Then, make sure it's worthy of quota-clogging
-        if trials.get(item._fullname):
-            pass
-        elif item._spam:
+        if item._spam:
             pass
         elif item._deleted:
             pass
@@ -420,8 +395,29 @@ def filter_quotas(unfiltered):
     else:
         return baskets, None
 
-def check_request(end_time):
-    pass
+
+def send_system_message(user, subject, body, system_user=None,
+                        distinguished='admin', repliable=False):
+    from r2.lib.db import queries
+
+    if system_user is None:
+        system_user = Account.system_user()
+    if not system_user:
+        g.log.warning("Can't send system message "
+                      "- invalid system_user or g.system_user setting")
+        return
+
+    item, inbox_rel = Message._new(system_user, user, subject, body,
+                                   ip='0.0.0.0')
+    item.distinguished = distinguished
+    item.repliable = repliable
+    item._commit()
+
+    try:
+        queries.new_message(item, inbox_rel)
+    except MemcachedError:
+        raise MessageError('reddit_inbox')
+
 
 try:
     from r2admin.models.admintools import *

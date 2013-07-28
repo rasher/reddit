@@ -16,7 +16,7 @@
 ## The Original Developer is the Initial Developer.  The Initial Developer of
 ## the Original Code is reddit Inc.
 ##
-## All portions of the code written by reddit are Copyright (c) 2006-2012
+## All portions of the code written by reddit are Copyright (c) 2006-2013
 ## reddit Inc. All Rights Reserved.
 ###############################################################################
 
@@ -36,7 +36,7 @@
 
 ${thing.content and thing.content() or ''}
 %if g.tracker_url and thing.site_tracking:
-  <img alt="" src="${tracking.UserInfo.gen_url()}"/>
+  <img alt="" src="${tracking.get_pageview_pixel_url()}"/>
 %endif
 
 <%def name="Title()">
