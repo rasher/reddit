@@ -3025,13 +3025,25 @@ class ApiController(RedditController, OAuth2ResourceController):
             # Push some client-side updates back to the browser.
 
             jquery('.id-%s .entry .linkflairlabel' % link._fullname).remove()
-            title_path = '.id-%s .entry > .title > .title' % link._fullname
+            jquery('.id-%s' % link._fullname).removeClass('linkflair')
+            # remove any existing linkflair-* classes as best we can
+            ids = FlairTemplateBySubredditIndex.get_template_ids(
+                site._id, flair_type=flair_type)
+            fts = FlairTemplate._byID(ids)
+            remove_classes = ' '.join('linkflair-' + fts[i].css_class
+                for i in ids)
+            jquery('.id-%s' % link._fullname).removeClass(remove_classes)
 
+            title_path = '.id-%s .entry > .title > .title' % link._fullname
             # TODO: move this to a template
             if flair_template:
+                flair_classes = ' '.join('linkflair-' + c
+                    for c in css_class.split())
+                jquery('.id-%s' % link._fullname).addClass('linkflair')
+                jquery('.id-%s' % link._fullname).addClass(flair_classes)
+
                 flair = '<span class="linkflairlabel %s">%s</span>' % (
-                    ' '.join('linkflair-' + c for c in css_class.split()),
-                    websafe(text))
+                    flair_classes, websafe(text))
                 if site.link_flair_position == 'left':
                     jquery(title_path).before(flair)
                 elif site.link_flair_position == 'right':
