@@ -3018,7 +3018,6 @@ class ApiController(RedditController, OAuth2ResourceController):
                 old_css_class = link.flair_css_class.split()
             else:
                 old_css_class = []
-            jquery('body').append('<div>remove %r</div>' % old_css_class)
             link.flair_css_class = css_class
             link._commit()
             changed(link)
