@@ -3014,6 +3014,11 @@ class ApiController(RedditController, OAuth2ResourceController):
                 'saved', css_class).val(css_class)
         elif flair_type == LINK_FLAIR:
             link.flair_text = text
+            if link.flair_css_class:
+                old_css_class = link.flair_css_class.split()
+            else:
+                old_css_class = []
+            jquery('body').append('<div>remove %r</div>' % old_css_class)
             link.flair_css_class = css_class
             link._commit()
             changed(link)
@@ -3026,13 +3031,9 @@ class ApiController(RedditController, OAuth2ResourceController):
 
             jquery('.id-%s .entry .linkflairlabel' % link._fullname).remove()
             jquery('.id-%s' % link._fullname).removeClass('linkflair')
-            # remove any existing linkflair-* classes as best we can
-            ids = FlairTemplateBySubredditIndex.get_template_ids(
-                site._id, flair_type=flair_type)
-            fts = FlairTemplate._byID(ids)
-            remove_classes = ' '.join('linkflair-' + fts[i].css_class
-                for i in ids)
-            jquery('.id-%s' % link._fullname).removeClass(remove_classes)
+            # remove any existing linkflair-* classes
+            jquery('.id-%s' % link._fullname).removeClass(
+                ' '.join('linkflair-' + c for c in old_css_class))
 
             title_path = '.id-%s .entry > .title > .title' % link._fullname
             # TODO: move this to a template
