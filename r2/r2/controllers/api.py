@@ -3034,6 +3034,8 @@ class ApiController(RedditController, OAuth2ResourceController):
             # remove any existing linkflair-* classes
             jquery('.id-%s' % link._fullname).removeClass(
                 ' '.join('linkflair-' + c for c in old_css_class))
+            jquery('body.comments-page').removeClass(
+                ' '.join('post-linkflair-' + c for c in old_css_class))
 
             title_path = '.id-%s .entry > .title > .title' % link._fullname
             # TODO: move this to a template
@@ -3042,6 +3044,8 @@ class ApiController(RedditController, OAuth2ResourceController):
                     for c in css_class.split())
                 jquery('.id-%s' % link._fullname).addClass('linkflair')
                 jquery('.id-%s' % link._fullname).addClass(flair_classes)
+                jquery('body.comments-page').addClass(
+                    ' '.join('post-linkflair-' + c for c in css_class.split()))
 
                 flair = '<span class="linkflairlabel %s">%s</span>' % (
                     flair_classes, websafe(text))
